@@ -1,1 +1,24 @@
+# Environment files: ignore all, except the committed example template.
 .env*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# Test/coverage artifacts
+coverage/
+.vitest-cache/
+
+# Vercel
+.vercel/
+
+# Editor/OS noise
+.DS_Store
+*.log

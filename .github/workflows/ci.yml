@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: Foundation quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Pin exact npm version (DEPLOYMENT.md §1)
+        run: npm install -g npm@11.19.0
+
+      # TESTING.md §6 ordered PR gate: install -> docs/static -> file-size
+      # -> lint -> typecheck -> unit -> integration -> build -> e2e.
+      - name: Immutable install
+        run: npm ci
+
+      - name: Docs and static validation
+        run: npm run docs:check
+
+      - name: File-size gate
+        run: npm run check:file-size
+
+      - name: Lint (type-aware, no explicit/implicit/unsafe any)
+        run: npm run lint
+
+      - name: Typecheck (strict)
+        run: npm run typecheck
+
+      - name: Unit tests with coverage
+        run: npm run test:unit -- --coverage
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Build
+        run: npm run build
+
+      - name: End-to-end (placeholder until Step 5 preview harness)
+        run: npm run test:e2e
+
+      - name: Supply-chain - npm audit signatures
+        run: npm audit signatures
+
+      - name: Supply-chain - dependency vulnerability audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Secret scan
+        run: npm run secret:scan

@@ -1,0 +1,4 @@
+{
+  "$comment": "Explicit non-glob source/test file paths exempt from the >500 line hard-fail gate (TESTING.md §6). Each entry requires an owner and a reason; add entries only for generated code, checked-in migrations, or fixture data that cannot reasonably be split.",
+  "entries": []
+}
