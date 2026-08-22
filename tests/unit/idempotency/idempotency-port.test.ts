@@ -36,4 +36,17 @@ describe("computeCanonicalBodyHash", () => {
     const b = computeCanonicalBodyHash({ b: 1 });
     expect(a).not.toBe(b);
   });
+
+  it("sorts keys by code-point order, not locale collation", () => {
+    // "B" (0x42) sorts before "a" (0x61) in code-point order but after it
+    // under many locale collations; the hash must not depend on which.
+    const a = computeCanonicalBodyHash({ B: 1, a: 2 });
+    const b = computeCanonicalBodyHash({ a: 2, B: 1 });
+    expect(a).toBe(b);
+  });
+
+  it("never throws on an undefined body or property value", () => {
+    expect(() => computeCanonicalBodyHash(undefined)).not.toThrow();
+    expect(() => computeCanonicalBodyHash({ a: undefined })).not.toThrow();
+  });
 });

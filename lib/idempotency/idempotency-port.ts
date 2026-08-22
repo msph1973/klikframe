@@ -46,14 +46,23 @@ export function computeCanonicalBodyHash(body: unknown): string {
 }
 
 function canonicalize(value: unknown): string {
+  // Real HTTP JSON bodies never contain `undefined` (JSON has no such
+  // literal); this only guards a JS object literal built programmatically
+  // (e.g. `{a: undefined}`). Mapping it to the same token as `null` is an
+  // accepted trade-off so hashing never throws or emits the bare `undefined`
+  // value into a template string (gitar-bot #2).
+  if (value === undefined) return "null";
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
     return `[${value.map((item: unknown) => canonicalize(item)).join(",")}]`;
   }
+  // Code-point order, not `localeCompare`: the hash is persisted and
+  // compared across instances/environments, so key ordering must be
+  // stable regardless of ICU/locale configuration (gitar-bot #1).
   const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a.localeCompare(b),
+    a < b ? -1 : a > b ? 1 : 0,
   );
   const body = entries
     .map(([key, val]) => `${JSON.stringify(key)}:${canonicalize(val)}`)
