@@ -54,4 +54,24 @@ describe("app/api/auth/[...path] route", () => {
     );
     expect(observed).toBe(incoming);
   });
+
+  it("preserves every Set-Cookie from a session-establishing auth response through the request-id rewrite", async () => {
+    setAuthRequestHandler(() => {
+      const response = new Response("ok");
+      response.headers.append("set-cookie", "better-auth.session_token=abc; Path=/; HttpOnly");
+      response.headers.append("set-cookie", "better-auth.session_data=def; Path=/; HttpOnly");
+      return Promise.resolve(response);
+    });
+    const incoming = "req_11111111-1111-4111-8111-111111111111";
+    const response = await GET(
+      new Request("https://example.com/api/auth/get-session", {
+        headers: { [REQUEST_ID_HEADER]: incoming },
+      }),
+    );
+    expect(response.headers.getSetCookie()).toEqual([
+      "better-auth.session_token=abc; Path=/; HttpOnly",
+      "better-auth.session_data=def; Path=/; HttpOnly",
+    ]);
+    expect(response.headers.get(REQUEST_ID_HEADER)).toBe(incoming);
+  });
 });

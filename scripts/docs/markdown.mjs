@@ -9,8 +9,10 @@ const CLOSING_HASH_SUFFIX = /\s+#+\s*$/;
 const INLINE_LINK = /\[([^\]]*)\]\([^)]*\)/g;
 const LINK_PATTERN = /\[([^\]]*)\]\(([^)\s]+)\)/g;
 // A fence marker is 3+ backticks or 3+ tildes (CommonMark); the closer
-// must use the same character and be at least as long as the opener.
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})([A-Za-z0-9_-]*)\s*$/;
+// must use the same character and be at least as long as the opener. The
+// info-string (language) may be separated from the marker by whitespace
+// ("~~~ json" is as valid as "~~~json").
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})\s*([A-Za-z0-9_-]*)\s*$/;
 const TABLE_SEPARATOR_ROW = /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/;
 
 /**
@@ -144,11 +146,13 @@ export function parseTables(content) {
       const headerColumns = splitRow(header).length;
       const rows = [];
       let j = i + 2;
-      // A line continues the table only while it still looks like a row
-      // (a real, non-code-span pipe delimiter survives splitRow) — a prose
-      // line that merely mentions `|` inside a code span, with no actual
-      // delimiter, ends the table instead of becoming a phantom 1-column row.
-      while (j < lines.length && lines[j].trim() !== "" && splitRow(lines[j]).length > 1) {
+      // A line continues the table only while it still looks like a row:
+      // it must contain at least one real (non-code-span) pipe delimiter,
+      // OR be an outer-pipe-only row like `| only |` — malformed, but it
+      // must surface as a column-mismatch finding, not be silently
+      // dropped. A prose line whose only pipe is inside a code span has
+      // neither, so it ends the table instead of becoming a phantom row.
+      while (j < lines.length && isTableRowCandidate(lines[j])) {
         rows.push({ line: j + 1, columns: splitRow(lines[j]).length });
         j += 1;
       }
@@ -202,4 +206,21 @@ function splitRow(line) {
   }
   cells.push(current);
   return cells;
+}
+
+/**
+ * True when a line should keep being consumed as part of a table body:
+ * either it splits into multiple cells (a real, non-code-span pipe acted
+ * as a delimiter) or it is an outer-pipe-only line (`| x |` shape — one
+ * cell after trimming the outer pipes). The latter is kept so a
+ * malformed row still surfaces via checkTableShapes instead of being
+ * silently skipped; prose mentioning `|` only inside a code span fails
+ * both tests and correctly terminates the table.
+ */
+function isTableRowCandidate(line) {
+  if (line.trim() === "") return false;
+  const trimmed = line.trim();
+  const hasOuterPipes =
+    trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length >= 2;
+  return splitRow(line).length > 1 || hasOuterPipes;
 }

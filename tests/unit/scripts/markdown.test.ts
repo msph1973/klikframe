@@ -84,6 +84,13 @@ describe("parseTables", () => {
     const [table] = parseTables(content);
     expect(table?.rows).toHaveLength(1);
   });
+
+  it("keeps an outer-pipe-only malformed row so it surfaces as a column mismatch instead of being dropped", () => {
+    const content = ["| A | B |", "|---|---|", "| only |", ""].join("\n");
+    const [table] = parseTables(content);
+    expect(table?.rows).toHaveLength(1);
+    expect(table?.rows[0]?.columns).toBe(1);
+  });
 });
 
 describe("findUnterminatedFenceLine", () => {
@@ -102,6 +109,12 @@ describe("findUnterminatedFenceLine", () => {
   it("supports ~~~ fences", () => {
     expect(findUnterminatedFenceLine(["~~~json", "{}", "~~~", ""].join("\n"))).toBeNull();
     expect(findUnterminatedFenceLine(["~~~json", "{}", ""].join("\n"))).toBe(1);
+  });
+
+  it("supports whitespace between the fence marker and the language (~~~ json)", () => {
+    expect(findUnterminatedFenceLine(["~~~ json", "{}", "~~~", ""].join("\n"))).toBeNull();
+    const [block] = parseFencedBlocks(["``` json", "{}", "```", ""].join("\n"), "json");
+    expect(block?.code).toBe("{}");
   });
 });
 

@@ -46,15 +46,27 @@ export function requestIdMiddleware(): MiddlewareHandler<{
  * the single source of truth for which ID a given request/response pair
  * correlates under; a delegate that mints its own ID instead of echoing
  * the incoming one must not win.
+ *
+ * `Set-Cookie` needs special care: auth responses establish sessions, and
+ * a Headers instance collapses repeated `set-cookie` entries when built
+ * from `headers.entries()` iteration (last-one-wins). `getSetCookie()`
+ * exposes every cookie individually; they are re-`append`ed after the
+ * rebuild so a multi-cookie session response survives intact.
  */
 export function withRequestIdHeader(response: Response, requestId: string): Response {
   const headers = new Headers(response.headers);
+  const setCookies = response.headers.getSetCookie();
+  headers.delete("set-cookie");
   headers.set(REQUEST_ID_HEADER, requestId);
-  return new Response(response.body, {
+  const rebuilt = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
   });
+  for (const cookie of setCookies) {
+    rebuilt.headers.append("set-cookie", cookie);
+  }
+  return rebuilt;
 }
 
 /** Clones a `Request` with `X-Request-Id` forced, so a well-behaved delegate that echoes what it received naturally aligns. */
