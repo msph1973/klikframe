@@ -33,6 +33,12 @@ jobs:
       - name: Immutable install
         run: npm ci
 
+      - name: Secret scan
+        # Runs before any generated artifact (build output, SBOM) exists
+        # in the working tree, so a future generated-file addition can't
+        # accidentally trip the scanner's untracked-file coverage.
+        run: npm run secret:scan
+
       - name: Docs and static validation
         run: npm run docs:check
 
@@ -76,6 +82,3 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.cyclonedx.json
           retention-days: 14
-
-      - name: Secret scan
-        run: npm run secret:scan
