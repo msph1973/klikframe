@@ -28,8 +28,12 @@ describe("createApp", () => {
     });
     const res = await app.request("/api/v1/boom");
     expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: { code: string; message: string } };
+    const body = (await res.json()) as {
+      error: { code: string; message: string; request_id: string | null };
+    };
     expect(body.error.code).toBe("INTERNAL_ERROR");
     expect(body.error.message).toBe("Internal server error");
+    expect(body.error.request_id).toBe(res.headers.get(REQUEST_ID_HEADER));
+    expect(isValidRequestId(res.headers.get(REQUEST_ID_HEADER))).toBe(true);
   });
 });

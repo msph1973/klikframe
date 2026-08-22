@@ -11,7 +11,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint app lib proxy.ts next.config.ts eslint.config.mjs vitest.config.ts scripts tests/unit tests/negative",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "docs:check": "node scripts/docs-check.mjs",
     "check:file-size": "node scripts/check-file-size.mjs",

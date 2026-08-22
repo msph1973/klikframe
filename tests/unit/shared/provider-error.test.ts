@@ -21,7 +21,6 @@ describe("ProviderError", () => {
     ["retryable", true],
     ["permanent", false],
     ["malformed_response", false],
-    ["unauthorized", false],
   ] as const)("treats kind=%s as retryable=%s", (kind, retryable) => {
     const error = new ProviderError(kind, { provider: "resend", operation: "send" }, "failure");
     expect(error.isRetryable).toBe(retryable);

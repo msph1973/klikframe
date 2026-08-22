@@ -66,3 +66,10 @@ export function getAuthProxyHandler(): AuthProxyHandler {
 export function setAuthProxyHandler(handler: AuthProxyHandler): void {
   authProxyHandler = handler;
 }
+
+/** Test-only: restores all three composition points to their unconfigured defaults. */
+export function resetAuthCompositionForTests(): void {
+  identityPort = new UnconfiguredIdentitySessionPort();
+  authRequestHandler = unconfiguredAuthRequestHandler;
+  authProxyHandler = unconfiguredAuthProxyHandler;
+}

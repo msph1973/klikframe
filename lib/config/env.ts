@@ -14,7 +14,9 @@ const envSchema = z.object({
   DATABASE_MIGRATION_URL: z.string().min(1).optional(),
   NEON_AUTH_BASE_URL: z.url().optional(),
   NEON_AUTH_COOKIE_SECRET: z.string().min(32).optional(),
-  UPSTASH_REDIS_REST_URL: z.url().optional(),
+  // DEPLOYMENT.md §3 labels this an "https-url": the REST token travels in
+  // the URL's request headers, so http would leak it in cleartext.
+  UPSTASH_REDIS_REST_URL: z.url({ protocol: /^https$/ }).optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
   AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
   AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
@@ -31,6 +33,11 @@ const envSchema = z.object({
   ABLY_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.url().optional(),
   SENTRY_AUTH_TOKEN: z.string().min(1).optional(),
+  // Deploy metadata (not in DEPLOYMENT.md §3; set by the platform/npm
+  // itself) — routed through this validated boundary rather than read
+  // ad hoc from `process.env` (see lib/http/health.ts).
+  VERCEL_GIT_COMMIT_SHA: z.string().min(1).optional(),
+  npm_package_version: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -51,11 +58,27 @@ export class EnvValidationError extends Error {
  * elsewhere in the codebase — always go through this parser.
  */
 export function loadEnv(source: unknown = process.env): Env {
-  const result = envSchema.safeParse(source);
+  const result = envSchema.safeParse(stripBlankValues(source));
   if (!result.success) {
     throw new EnvValidationError(result.error.issues);
   }
   return result.data;
+}
+
+/**
+ * `.env.example` documents optional keys as `KEY=` (blank). A developer
+ * copying that template gets `process.env.KEY === ""`, which must mean
+ * "unset", not "invalid" — an optional field's validators (`.url()`,
+ * `.min(32)`, ...) would otherwise reject the blank string.
+ */
+function stripBlankValues(source: unknown): unknown {
+  if (typeof source !== "object" || source === null) return source;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (value === "") continue;
+    result[key] = value;
+  }
+  return result;
 }
 
 let cached: Env | undefined;

@@ -38,3 +38,20 @@ export function requestIdMiddleware(): MiddlewareHandler<{
     c.header(REQUEST_ID_HEADER, requestId);
   };
 }
+
+/**
+ * Guarantees `X-Request-Id` on a raw `Response` built outside Hono's
+ * context (e.g. a delegated auth-provider handler). No-op when the
+ * response already carries the header, so a well-behaved delegate is
+ * never overridden.
+ */
+export function ensureRequestIdHeader(response: Response, requestId: string): Response {
+  if (response.headers.has(REQUEST_ID_HEADER)) return response;
+  const headers = new Headers(response.headers);
+  headers.set(REQUEST_ID_HEADER, requestId);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}

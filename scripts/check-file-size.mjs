@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 export const REVIEW_TARGET_LINES = 400;
 export const HARD_FAIL_LINES = 500;
 
-const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs"]);
+const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const EXCLUDED_DIR_SEGMENTS = new Set(["node_modules", ".next", "coverage", "dist", "build"]);
 
 export function countPhysicalLines(content) {

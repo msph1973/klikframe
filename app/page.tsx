@@ -2,7 +2,7 @@ export default function HomePage() {
   return (
     <main>
       <h1>KlikFrame</h1>
-      <p>Phase 0 foundation scaffold. Dashboard and portal ship in later phases.</p>
+      <p>Fondasi Phase 0. Dashboard dan portal klien menyusul pada fase berikutnya.</p>
     </main>
   );
 }

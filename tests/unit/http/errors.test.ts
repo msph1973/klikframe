@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppError, ERROR_STATUS_MAP, toErrorEnvelope } from "../../../lib/http/errors";
+import { ProviderError } from "../../../lib/shared/provider-error";
 
 describe("AppError", () => {
   it("maps each error code to its API_SPEC.md §1.2 HTTP status", () => {
@@ -33,6 +34,24 @@ describe("AppError", () => {
     const mapped = AppError.from(new Error("leaked stack trace with secret=abc"));
     expect(mapped.code).toBe("INTERNAL_ERROR");
     expect(mapped.status).toBe(500);
+    expect(mapped.message).toBe("Internal server error");
+  });
+
+  it("maps a retryable ProviderError to DEPENDENCY_UNAVAILABLE (503)", () => {
+    const cause = new ProviderError("timeout", { provider: "ably", operation: "publish" }, "timed out");
+    const mapped = AppError.from(cause);
+    expect(mapped.code).toBe("DEPENDENCY_UNAVAILABLE");
+    expect(mapped.status).toBe(503);
+  });
+
+  it("collapses a non-retryable ProviderError to a sanitized internal error", () => {
+    const cause = new ProviderError(
+      "permanent",
+      { provider: "resend", operation: "send" },
+      "raw provider payload with recipient@example.com",
+    );
+    const mapped = AppError.from(cause);
+    expect(mapped.code).toBe("INTERNAL_ERROR");
     expect(mapped.message).toBe("Internal server error");
   });
 });

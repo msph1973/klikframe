@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 /**
  * Frozen idempotency contract (API_SPEC.md §1.4). A key is scoped by
- * principal + route + key for at least 24h; a replay with a different
+ * principal + route + resource for at least 24h; a replay with a different
  * request body hash is a conflict, a matching hash replays the original
  * response. The data worktree (Phase 0 Step 2) backs `IdempotencyStore`
  * with a real `idempotency_requests` table.
@@ -12,6 +12,14 @@ export const IDEMPOTENCY_MIN_TTL_MS = 24 * 60 * 60 * 1000;
 export interface IdempotencyKeyScope {
   readonly principalId: string;
   readonly route: string;
+  /**
+   * Distinguishes mutations against different resources on the same route
+   * template (e.g. two different invoices' `payment/reversal`). `null` for
+   * routes with no resource, such as onboarding (cubic-dev-ai P1: without
+   * this, reusing a client's `Idempotency-Key` across two resources on one
+   * route collapses into a single record).
+   */
+  readonly resourceId: string | null;
   readonly key: string;
 }
 

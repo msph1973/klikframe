@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parseHeadings, parseLocalLinks, parseFencedBlocks, parseTables } from "./markdown.mjs";
+import {
+  parseHeadings,
+  parseLocalLinks,
+  parseFencedBlocks,
+  parseTables,
+  findUnterminatedFenceLine,
+} from "./markdown.mjs";
 
 const MERMAID_DIAGRAM_KEYWORDS = [
   "graph",
@@ -22,6 +28,7 @@ const BRACKET_CLOSERS = new Set(Object.values(BRACKET_PAIRS));
 
 const REQUIREMENT_ID_PATTERN = /\b((?:KF|NFR)-[A-Z]+-\d{3})\b/g;
 const REQUIREMENT_HEADING_PATTERN = /^#{2,4}\s+`?(KF-[A-Z]+-\d{3})`?\s+—/;
+const NFR_TABLE_ROW_PATTERN = /^\|\s*(NFR-[A-Z]+-\d{3})\s*\|/;
 const REQUIREMENT_CANONICAL_FILE = "PRODUCT_REQUIREMENTS.md";
 
 const FORBIDDEN_ENV_PATTERNS = [
@@ -153,19 +160,26 @@ export function checkRequirementIds({ files, cwd }) {
   const canonicalContent = readFileSync(path.join(cwd, REQUIREMENT_CANONICAL_FILE), "utf8");
   const canonicalLines = canonicalContent.split("\n");
 
+  // Canonical IDs are true *definitions* only: KF-* headings and NFR-*
+  // table rows in PRODUCT_REQUIREMENTS.md. Building this set from every
+  // mention in the file (including its own §11 traceability references)
+  // would let a typo'd reference row self-authorize itself.
   const headingCounts = new Map();
+  const canonicalIds = new Set();
   canonicalLines.forEach((line) => {
-    const match = REQUIREMENT_HEADING_PATTERN.exec(line);
-    if (!match) return;
-    headingCounts.set(match[1], (headingCounts.get(match[1]) ?? 0) + 1);
+    const headingMatch = REQUIREMENT_HEADING_PATTERN.exec(line);
+    if (headingMatch) {
+      headingCounts.set(headingMatch[1], (headingCounts.get(headingMatch[1]) ?? 0) + 1);
+      canonicalIds.add(headingMatch[1]);
+    }
+    const tableMatch = NFR_TABLE_ROW_PATTERN.exec(line);
+    if (tableMatch) canonicalIds.add(tableMatch[1]);
   });
   for (const [id, count] of headingCounts) {
     if (count > 1) {
       findings.push(`${REQUIREMENT_CANONICAL_FILE}: requirement ${id} is defined by ${count} headings, expected 1`);
     }
   }
-
-  const canonicalIds = new Set([...canonicalContent.matchAll(REQUIREMENT_ID_PATTERN)].map((m) => m[1]));
 
   for (const file of files) {
     const content = readFileSync(path.join(cwd, file), "utf8");
@@ -182,21 +196,53 @@ export function checkRequirementIds({ files, cwd }) {
   return findings;
 }
 
+/** Returns the sentence (bounded by `.`/`;`) containing `index`. */
+function sentenceContaining(line, index) {
+  let start = 0;
+  for (let i = 0; i < index; i += 1) {
+    if (line[i] === "." || line[i] === ";") start = i + 1;
+  }
+  let end = line.length;
+  for (let i = index; i < line.length; i += 1) {
+    if (line[i] === "." || line[i] === ";") {
+      end = i;
+      break;
+    }
+  }
+  return line.slice(start, end);
+}
+
 /** @param {{ files: string[], cwd: string }} ctx */
 export function checkForbiddenEnvVars({ files, cwd }) {
   const findings = [];
   for (const file of files) {
     const content = readFileSync(path.join(cwd, file), "utf8");
     content.split("\n").forEach((line, index) => {
-      const lowered = line.toLowerCase();
-      const hasNegation = NEGATION_MARKERS.some((marker) => lowered.includes(marker));
-      if (hasNegation) return;
       for (const pattern of FORBIDDEN_ENV_PATTERNS) {
-        if (pattern.test(line)) {
-          findings.push(`${file}:${index + 1} mentions forbidden/legacy env var pattern (${pattern}) outside a negation context`);
+        const match = pattern.exec(line);
+        if (!match) continue;
+        const sentence = sentenceContaining(line, match.index).toLowerCase();
+        const hasNegation = NEGATION_MARKERS.some((marker) => sentence.includes(marker));
+        if (!hasNegation) {
+          findings.push(
+            `${file}:${index + 1} mentions forbidden/legacy env var pattern (${pattern}) outside a negation sentence`,
+          );
         }
       }
     });
+  }
+  return findings;
+}
+
+/** @param {{ files: string[], cwd: string }} ctx */
+export function checkUnterminatedFences({ files, cwd }) {
+  const findings = [];
+  for (const file of files) {
+    const content = readFileSync(path.join(cwd, file), "utf8");
+    const line = findUnterminatedFenceLine(content);
+    if (line !== null) {
+      findings.push(`${file}:${line} fenced code block opened but never closed`);
+    }
   }
   return findings;
 }
@@ -210,8 +256,8 @@ export function checkFileSizeAllowlistShape(allowlistPath) {
   } catch (error) {
     return [`${allowlistPath}: invalid JSON (${errorMessage(error)})`];
   }
-  if (!Array.isArray(raw.entries)) {
-    return [`${allowlistPath}: missing "entries" array`];
+  if (typeof raw !== "object" || raw === null || !Array.isArray(raw.entries)) {
+    return [`${allowlistPath}: must be a JSON object with an "entries" array`];
   }
   for (const entry of raw.entries) {
     if (typeof entry.path !== "string" || entry.path.length === 0) {
@@ -230,6 +276,7 @@ export function checkFileSizeAllowlistShape(allowlistPath) {
   }
   return findings;
 }
+
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);

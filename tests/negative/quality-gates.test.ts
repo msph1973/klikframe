@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,13 +14,18 @@ import {
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
+// Invoke the pinned local binaries directly rather than `npx`, which is
+// version-ambiguous (it can resolve or install a global/latest binary
+// when node_modules is absent) and would undermine this PR's exact-pin
+// goal for a gate that specifically proves version-sensitive behavior.
+const BIN_DIR = path.join(REPO_ROOT, "node_modules", ".bin");
 
 describe("NFR-CQ-001 negative fixtures: forbidden any", () => {
   it("fails `tsc --noEmit --strict` on an implicit any parameter (TS7006)", async () => {
     await expect(
       execFileAsync(
-        "npx",
-        ["tsc", "--noEmit", "-p", "tests/fixtures/negative/tsconfig.json"],
+        path.join(BIN_DIR, "tsc"),
+        ["--noEmit", "-p", "tests/fixtures/negative/tsconfig.json"],
         { cwd: REPO_ROOT },
       ),
     ).rejects.toMatchObject({
@@ -31,8 +36,8 @@ describe("NFR-CQ-001 negative fixtures: forbidden any", () => {
   it("fails ESLint on explicit `any` and unsafe member access", async () => {
     await expect(
       execFileAsync(
-        "npx",
-        ["eslint", "--no-ignore", "tests/fixtures/negative/explicit-any.fixture.ts"],
+        path.join(BIN_DIR, "eslint"),
+        ["--no-ignore", "tests/fixtures/negative/explicit-any.fixture.ts"],
         { cwd: REPO_ROOT },
       ),
     ).rejects.toMatchObject({
@@ -61,9 +66,9 @@ describe("NFR-CQ-001 negative fixtures: file-size hard gate", () => {
 
   it("fails a generated file above the hard limit", () => {
     const filePath = path.join(tmpDir, "oversize.ts");
-    const content = "const line = 1;\n".repeat(HARD_FAIL_LINES + 1);
-    writeFileSync(filePath, content);
-    const result = evaluateFile(filePath, countPhysicalLines(content), new Set());
+    writeFileSync(filePath, "const line = 1;\n".repeat(HARD_FAIL_LINES + 1));
+    const persisted = readFileSync(filePath, "utf8");
+    const result = evaluateFile(filePath, countPhysicalLines(persisted), new Set());
     expect(result.severity).toBe("fail");
     expect(result.lineCount).toBeGreaterThan(HARD_FAIL_LINES);
   });

@@ -61,7 +61,21 @@ jobs:
         run: npm audit signatures
 
       - name: Supply-chain - dependency vulnerability audit
-        run: npm audit --omit=dev --audit-level=high
+        # Full tree, not --omit=dev: devDependencies (eslint, vitest, the
+        # Next.js/TypeScript toolchain) execute code in this very CI run,
+        # so a critical devDependency vulnerability is as real a gate as a
+        # production one.
+        run: npm audit --audit-level=high
+
+      - name: Supply-chain - SBOM (DEPLOYMENT.md §5, SECURITY.md §7)
+        run: npm sbom --sbom-format=cyclonedx > sbom.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cyclonedx.json
+          retention-days: 14
 
       - name: Secret scan
         run: npm run secret:scan

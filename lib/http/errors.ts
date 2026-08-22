@@ -1,3 +1,5 @@
+import { ProviderError } from "@/lib/shared/provider-error";
+
 /**
  * Frozen error envelope contract (API_SPEC.md §1.2). Every `/api/v1`
  * failure — including provider/route shells landing in later Phase 0
@@ -60,11 +62,17 @@ export class AppError extends Error {
   }
 
   /**
-   * Maps any thrown value to a client-safe `AppError`. Non-`AppError`
-   * causes are collapsed to a generic message so internals never leak.
+   * Maps any thrown value to a client-safe `AppError`. A `ProviderError`
+   * with a retryable kind (timeout/retryable) maps to `DEPENDENCY_UNAVAILABLE`
+   * so clients follow the API contract's retry policy; every other cause
+   * (including non-retryable provider failures) collapses to a generic
+   * internal error so internals/provider detail never leak.
    */
   static from(cause: unknown): AppError {
     if (cause instanceof AppError) return cause;
+    if (cause instanceof ProviderError && cause.isRetryable) {
+      return new AppError("DEPENDENCY_UNAVAILABLE", "Upstream provider is temporarily unavailable");
+    }
     return new AppError("INTERNAL_ERROR", "Internal server error");
   }
 }

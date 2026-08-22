@@ -8,7 +8,7 @@ describe("loadEnv", () => {
     expect(env.APP_ORIGIN).toBeUndefined();
   });
 
-  it("accepts every canonical DEPLOYMENT.md §3 field when present", () => {
+  it("accepts a representative sample of documented DEPLOYMENT.md §3 fields when present", () => {
     const env = loadEnv({
       NODE_ENV: "production",
       APP_ORIGIN: "https://app.klikframe.id",
@@ -18,6 +18,21 @@ describe("loadEnv", () => {
     });
     expect(env.NODE_ENV).toBe("production");
     expect(env.APP_ORIGIN).toBe("https://app.klikframe.id");
+    expect(env.CRON_SECRET).toHaveLength(32);
+  });
+
+  it("requires UPSTASH_REDIS_REST_URL to be https so the REST token never travels in cleartext", () => {
+    expect(() => loadEnv({ UPSTASH_REDIS_REST_URL: "http://example.upstash.io" })).toThrow(
+      EnvValidationError,
+    );
+    expect(loadEnv({ UPSTASH_REDIS_REST_URL: "https://example.upstash.io" }).UPSTASH_REDIS_REST_URL).toBe(
+      "https://example.upstash.io",
+    );
+  });
+
+  it("treats a blank .env.example-style value as unset, not invalid", () => {
+    const env = loadEnv({ NEON_AUTH_COOKIE_SECRET: "", CRON_SECRET: "c".repeat(32) });
+    expect(env.NEON_AUTH_COOKIE_SECRET).toBeUndefined();
     expect(env.CRON_SECRET).toHaveLength(32);
   });
 
@@ -42,5 +57,11 @@ describe("loadEnv", () => {
       const validationError = error as EnvValidationError;
       expect(validationError.issues.length).toBeGreaterThan(0);
     }
+  });
+
+  it("routes deploy metadata (VERCEL_GIT_COMMIT_SHA, npm_package_version) through the same validated boundary", () => {
+    const env = loadEnv({ VERCEL_GIT_COMMIT_SHA: "abc123", npm_package_version: "0.1.0" });
+    expect(env.VERCEL_GIT_COMMIT_SHA).toBe("abc123");
+    expect(env.npm_package_version).toBe("0.1.0");
   });
 });

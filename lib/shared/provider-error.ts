@@ -6,12 +6,7 @@
  * error types. Messages MUST be sanitized by the adapter before wrapping —
  * this class never accepts raw provider payloads/secrets as `message`.
  */
-export type ProviderErrorKind =
-  | "timeout"
-  | "retryable"
-  | "permanent"
-  | "malformed_response"
-  | "unauthorized";
+export type ProviderErrorKind = "timeout" | "retryable" | "permanent" | "malformed_response";
 
 export interface ProviderErrorContext {
   readonly provider: string;

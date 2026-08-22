@@ -4,23 +4,16 @@ import {
   getAuthProxyHandler,
   getAuthRequestHandler,
   getIdentitySessionPort,
+  resetAuthCompositionForTests,
   setAuthProxyHandler,
   setAuthRequestHandler,
   setIdentitySessionPort,
 } from "../../../lib/auth/server";
-import type { IdentitySessionPort, SessionResolution } from "../../../lib/auth/identity-session-port";
-
-class StubIdentitySessionPort implements IdentitySessionPort {
-  resolveSession(): Promise<SessionResolution> {
-    return Promise.resolve({ kind: "unauthenticated" });
-  }
-}
+import type { IdentitySessionPort } from "../../../lib/auth/identity-session-port";
 
 describe("auth composition point", () => {
   afterEach(() => {
-    setIdentitySessionPort(new StubIdentitySessionPort());
-    setAuthRequestHandler(getAuthRequestHandler());
-    setAuthProxyHandler(getAuthProxyHandler());
+    resetAuthCompositionForTests();
   });
 
   it("defaults the auth request handler to a sanitized DEPENDENCY_UNAVAILABLE response", async () => {
@@ -55,5 +48,17 @@ describe("auth composition point", () => {
     setIdentitySessionPort(custom);
     const resolution = await getIdentitySessionPort().resolveSession(new Request("https://example.com/"));
     expect(resolution.kind).toBe("authenticated");
+  });
+
+  it("lets a later wave swap in a real auth request handler", async () => {
+    setAuthRequestHandler(() => Promise.resolve(new Response("ok", { status: 200 })));
+    const response = await getAuthRequestHandler()(new Request("https://example.com/api/auth/sign-in"));
+    expect(response.status).toBe(200);
+  });
+
+  it("lets a later wave swap in a real auth proxy handler", () => {
+    const custom = () => NextResponse.redirect(new URL("https://example.com/auth/sign-in"));
+    setAuthProxyHandler(custom);
+    expect(getAuthProxyHandler()).toBe(custom);
   });
 });
