@@ -46,12 +46,28 @@ describe("scanContent", () => {
     expect(scanContent(".env.example", body)).toHaveLength(0);
   });
 
-  it("does not flag synthetic secret-shaped fixtures under tests/", () => {
+  it("does not flag synthetic secret-shaped fixtures in the exact exempted test file", () => {
     const findings = scanContent(
       "tests/unit/scripts/secret-scan.test.ts",
       'export const AWS_SECRET_ACCESS_KEY = "ACVDby7jojxldyCEPqASLBXVca0b9lBR0sjJvPHs";',
     );
     expect(findings).toHaveLength(0);
+  });
+
+  it("still flags a real secret-shaped assignment under a different tests/ path", () => {
+    const findings = scanContent(
+      "tests/fixtures/leaked.ts",
+      'export const AWS_SECRET_ACCESS_KEY = "ACVDby7jojxldyCEPqASLBXVca0b9lBR0sjJvPHs";',
+    );
+    expect(findings.some((f) => f.rule === "generic-secret-assignment")).toBe(true);
+  });
+
+  it("flags a quoted JSON key like \"SECRET\": \"...\"", () => {
+    const findings = scanContent(
+      "config.json",
+      '{ "SECRET": "abcdefghijklmnopqrstuvwxyz123456" }',
+    );
+    expect(findings.some((f) => f.rule === "generic-secret-assignment")).toBe(true);
   });
 });
 

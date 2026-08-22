@@ -8,7 +8,9 @@ const HEADING_LINE = /^ {0,3}(#{1,6})\s+(.*)$/;
 const CLOSING_HASH_SUFFIX = /\s+#+\s*$/;
 const INLINE_LINK = /\[([^\]]*)\]\([^)]*\)/g;
 const LINK_PATTERN = /\[([^\]]*)\]\(([^)\s]+)\)/g;
-const FENCE_OPEN = /^ {0,3}```([A-Za-z0-9_-]*)\s*$/;
+// A fence marker is 3+ backticks or 3+ tildes (CommonMark); the closer
+// must use the same character and be at least as long as the opener.
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})([A-Za-z0-9_-]*)\s*$/;
 const TABLE_SEPARATOR_ROW = /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/;
 
 /**
@@ -30,19 +32,38 @@ function headingVisibleText(rawText) {
   return withoutClosingHashes.replace(INLINE_LINK, "$1");
 }
 
-/** 0-based line indices that fall strictly inside a fenced code block. */
-function computeFencedLineNumbers(lines) {
-  const fenced = new Set();
-  let open = false;
+/**
+ * Single-pass fence tracker shared by every fence-aware consumer below, so
+ * open/close matching (variable marker length, backtick-vs-tilde, ≤3-space
+ * indentation on both ends) is defined exactly once.
+ * @param {string[]} lines
+ * @returns {{ fencedLines: Set<number>, blocks: { lang: string, code: string, line: number }[], unterminatedAt: number | null }}
+ */
+function scanFences(lines) {
+  const fencedLines = new Set();
+  const blocks = [];
+  let open = null; // { char, len, lang, startLine, bodyStart }
   for (let i = 0; i < lines.length; i += 1) {
-    if (!open) {
-      if (FENCE_OPEN.test(lines[i])) open = true;
+    if (open === null) {
+      const match = FENCE_OPEN.exec(lines[i]);
+      if (match) {
+        const marker = match[1];
+        open = { char: marker[0], len: marker.length, lang: match[2], startLine: i, bodyStart: i + 1 };
+      }
       continue;
     }
-    fenced.add(i);
-    if (lines[i].trim() === "```") open = false;
+    fencedLines.add(i);
+    const closes = new RegExp(`^ {0,3}${open.char}{${String(open.len)},}\\s*$`).test(lines[i]);
+    if (closes) {
+      blocks.push({
+        lang: open.lang,
+        code: lines.slice(open.bodyStart, i).join("\n"),
+        line: open.startLine + 1,
+      });
+      open = null;
+    }
   }
-  return fenced;
+  return { fencedLines, blocks, unterminatedAt: open ? open.startLine + 1 : null };
 }
 
 /**
@@ -51,11 +72,11 @@ function computeFencedLineNumbers(lines) {
  */
 export function parseHeadings(content) {
   const lines = content.split("\n");
-  const fenced = computeFencedLineNumbers(lines);
+  const { fencedLines } = scanFences(lines);
   const seen = new Map();
   const headings = [];
   lines.forEach((line, index) => {
-    if (fenced.has(index)) return;
+    if (fencedLines.has(index)) return;
     const match = HEADING_LINE.exec(line);
     if (!match) return;
     const level = match[1].length;
@@ -75,10 +96,10 @@ export function parseHeadings(content) {
  */
 export function parseLocalLinks(content) {
   const lines = content.split("\n");
-  const fenced = computeFencedLineNumbers(lines);
+  const { fencedLines } = scanFences(lines);
   const links = [];
   lines.forEach((line, index) => {
-    if (fenced.has(index)) return;
+    if (fencedLines.has(index)) return;
     LINK_PATTERN.lastIndex = 0;
     let match;
     while ((match = LINK_PATTERN.exec(line)) !== null) {
@@ -96,24 +117,8 @@ export function parseLocalLinks(content) {
  * @returns {{ lang: string, code: string, line: number }[]}
  */
 export function parseFencedBlocks(content, lang) {
-  const lines = content.split("\n");
-  const blocks = [];
-  let open = null;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (open === null) {
-      const match = FENCE_OPEN.exec(lines[i]);
-      if (match) open = { lang: match[1], startLine: i + 1, bodyStart: i + 1 };
-      continue;
-    }
-    if (lines[i].trim() === "```") {
-      const code = lines.slice(open.bodyStart, i).join("\n");
-      if (!lang || open.lang === lang) {
-        blocks.push({ lang: open.lang, code, line: open.startLine });
-      }
-      open = null;
-    }
-  }
-  return blocks;
+  const { blocks } = scanFences(content.split("\n"));
+  return lang ? blocks.filter((block) => block.lang === lang) : blocks;
 }
 
 /**
@@ -121,16 +126,7 @@ export function parseFencedBlocks(content, lang) {
  * @returns {number | null} 1-based line of a fence opened but never closed, or null
  */
 export function findUnterminatedFenceLine(content) {
-  const lines = content.split("\n");
-  let openLine = null;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (openLine === null) {
-      if (FENCE_OPEN.test(lines[i])) openLine = i + 1;
-      continue;
-    }
-    if (lines[i].trim() === "```") openLine = null;
-  }
-  return openLine;
+  return scanFences(content.split("\n")).unterminatedAt;
 }
 
 /**
@@ -148,7 +144,11 @@ export function parseTables(content) {
       const headerColumns = splitRow(header).length;
       const rows = [];
       let j = i + 2;
-      while (j < lines.length && lines[j].trim() !== "" && lines[j].includes("|")) {
+      // A line continues the table only while it still looks like a row
+      // (a real, non-code-span pipe delimiter survives splitRow) — a prose
+      // line that merely mentions `|` inside a code span, with no actual
+      // delimiter, ends the table instead of becoming a phantom 1-column row.
+      while (j < lines.length && lines[j].trim() !== "" && splitRow(lines[j]).length > 1) {
         rows.push({ line: j + 1, columns: splitRow(lines[j]).length });
         j += 1;
       }
@@ -161,30 +161,44 @@ export function parseTables(content) {
   return tables;
 }
 
-/** Splits a table row on unescaped pipes outside inline code spans. */
+/**
+ * Splits a table row on unescaped pipes outside inline code spans. A code
+ * span may open/close with a run of 2+ backticks (not just one), and only
+ * a run of the *same* length closes it (CommonMark backtick-code-span rule).
+ */
 function splitRow(line) {
   const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
   const cells = [];
   let current = "";
-  let inCode = false;
-  for (let i = 0; i < trimmed.length; i += 1) {
+  let codeSpanDelimLen = 0;
+  let i = 0;
+  while (i < trimmed.length) {
     const ch = trimmed[i];
     if (ch === "`") {
-      inCode = !inCode;
-      current += ch;
+      let runLen = 0;
+      while (trimmed[i + runLen] === "`") runLen += 1;
+      if (codeSpanDelimLen === 0) {
+        codeSpanDelimLen = runLen;
+      } else if (runLen === codeSpanDelimLen) {
+        codeSpanDelimLen = 0;
+      }
+      current += "`".repeat(runLen);
+      i += runLen;
       continue;
     }
     if (ch === "\\" && trimmed[i + 1] === "|") {
       current += "|";
+      i += 2;
+      continue;
+    }
+    if (ch === "|" && codeSpanDelimLen === 0) {
+      cells.push(current);
+      current = "";
       i += 1;
       continue;
     }
-    if (ch === "|" && !inCode) {
-      cells.push(current);
-      current = "";
-      continue;
-    }
     current += ch;
+    i += 1;
   }
   cells.push(current);
   return cells;

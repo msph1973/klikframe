@@ -33,12 +33,6 @@ jobs:
       - name: Immutable install
         run: npm ci
 
-      - name: Secret scan
-        # Runs before any generated artifact (build output, SBOM) exists
-        # in the working tree, so a future generated-file addition can't
-        # accidentally trip the scanner's untracked-file coverage.
-        run: npm run secret:scan
-
       - name: Docs and static validation
         run: npm run docs:check
 
@@ -62,6 +56,14 @@ jobs:
 
       - name: End-to-end (placeholder until Step 5 preview harness)
         run: npm run test:e2e
+
+      # Supply-chain gates layered on top of the TESTING.md §6 sequence
+      # (DEPLOYMENT.md §5, SECURITY.md §7, §9, §11). Secret scan runs
+      # before SBOM generation specifically, so the generated
+      # sbom.cyclonedx.json (untracked, gitignored) can never itself be
+      # picked up and trip the scanner's oversize-file check.
+      - name: Secret scan
+        run: npm run secret:scan
 
       - name: Supply-chain - npm audit signatures
         run: npm audit signatures

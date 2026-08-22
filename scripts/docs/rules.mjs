@@ -154,26 +154,42 @@ export function checkTableShapes({ files, cwd }) {
   return findings;
 }
 
+/** Line range [startLine, endLine) of the section whose heading matches /non-functional/i. */
+function nonFunctionalSectionRange(content) {
+  const headings = parseHeadings(content);
+  const sectionIndex = headings.findIndex((h) => /non-functional/i.test(h.text));
+  if (sectionIndex === -1) return null;
+  const section = headings[sectionIndex];
+  const next = headings.slice(sectionIndex + 1).find((h) => h.level <= section.level);
+  return { startLine: section.line, endLine: next ? next.line : Infinity };
+}
+
 /** @param {{ files: string[], cwd: string }} ctx */
 export function checkRequirementIds({ files, cwd }) {
   const findings = [];
   const canonicalContent = readFileSync(path.join(cwd, REQUIREMENT_CANONICAL_FILE), "utf8");
   const canonicalLines = canonicalContent.split("\n");
+  const nfrRange = nonFunctionalSectionRange(canonicalContent);
 
-  // Canonical IDs are true *definitions* only: KF-* headings and NFR-*
-  // table rows in PRODUCT_REQUIREMENTS.md. Building this set from every
-  // mention in the file (including its own §11 traceability references)
-  // would let a typo'd reference row self-authorize itself.
+  // Canonical IDs are true *definitions* only: KF-* headings anywhere, and
+  // NFR-* table rows strictly inside the "Non-Functional Requirements"
+  // section. Accepting an NFR-shaped ID from anywhere in the file
+  // (including its own §11 traceability references) would let a typo'd
+  // reference row self-authorize itself.
   const headingCounts = new Map();
   const canonicalIds = new Set();
-  canonicalLines.forEach((line) => {
+  canonicalLines.forEach((line, index) => {
+    const lineNumber = index + 1;
     const headingMatch = REQUIREMENT_HEADING_PATTERN.exec(line);
     if (headingMatch) {
       headingCounts.set(headingMatch[1], (headingCounts.get(headingMatch[1]) ?? 0) + 1);
       canonicalIds.add(headingMatch[1]);
     }
-    const tableMatch = NFR_TABLE_ROW_PATTERN.exec(line);
-    if (tableMatch) canonicalIds.add(tableMatch[1]);
+    const inNfrSection = nfrRange && lineNumber >= nfrRange.startLine && lineNumber < nfrRange.endLine;
+    if (inNfrSection) {
+      const tableMatch = NFR_TABLE_ROW_PATTERN.exec(line);
+      if (tableMatch) canonicalIds.add(tableMatch[1]);
+    }
   });
   for (const [id, count] of headingCounts) {
     if (count > 1) {

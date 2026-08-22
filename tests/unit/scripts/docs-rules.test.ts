@@ -49,6 +49,28 @@ describe("checkRequirementIds", () => {
     const findings = checkRequirementIds({ files: ["PRODUCT_REQUIREMENTS.md", "OTHER.md"], cwd });
     expect(findings).toHaveLength(0);
   });
+
+  it("does not accept a misspelled NFR ID from outside the Non-Functional Requirements section as a definition", () => {
+    writeFileSync(
+      path.join(cwd, "PRODUCT_REQUIREMENTS.md"),
+      [
+        "## 8. Non-Functional Requirements",
+        "",
+        "| ID | Area |",
+        "|---|---|",
+        "| NFR-SEC-001 | Security |",
+        "",
+        "## 11. Initial Traceability Matrix",
+        "",
+        "| ID | Note |",
+        "|---|---|",
+        "| NFR-SEC-002 | typo, should be NFR-SEC-001 |",
+        "",
+      ].join("\n"),
+    );
+    const findings = checkRequirementIds({ files: ["PRODUCT_REQUIREMENTS.md"], cwd });
+    expect(findings.some((f) => f.includes("NFR-SEC-002"))).toBe(true);
+  });
 });
 
 describe("checkForbiddenEnvVars", () => {
@@ -97,6 +119,12 @@ describe("checkUnterminatedFences", () => {
     writeFileSync(path.join(cwd, "DOC.md"), ["Intro", "```json", "{}", ""].join("\n"));
     const findings = checkUnterminatedFences({ files: ["DOC.md"], cwd });
     expect(findings).toHaveLength(1);
+  });
+
+  it("accepts a longer closer than the opener (3-backtick open, 4-backtick close)", () => {
+    writeFileSync(path.join(cwd, "DOC.md"), ["```json", "{}", "````", ""].join("\n"));
+    const findings = checkUnterminatedFences({ files: ["DOC.md"], cwd });
+    expect(findings).toHaveLength(0);
   });
 });
 

@@ -89,7 +89,7 @@ export interface RealtimeTokenIssuer {
  */
 export function assertRealtimeTokenTtl(clock: Clock, expiresAt: Date): void {
   const ttlMs = expiresAt.getTime() - clock.now().getTime();
-  if (ttlMs <= 0 || ttlMs > REALTIME_TOKEN_MAX_TTL_MS) {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > REALTIME_TOKEN_MAX_TTL_MS) {
     throw new RangeError(
       `Realtime token capability expiresAt must be within (0, ${String(REALTIME_TOKEN_MAX_TTL_MS)}] ms of now (got ${String(ttlMs)}ms)`,
     );

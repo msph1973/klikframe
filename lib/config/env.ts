@@ -33,14 +33,14 @@ const envSchema = z.object({
   ABLY_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.url().optional(),
   SENTRY_AUTH_TOKEN: z.string().min(1).optional(),
-  // Deploy metadata (not in DEPLOYMENT.md §3; set by the platform/npm
-  // itself) — routed through this validated boundary rather than read
-  // ad hoc from `process.env` (see lib/http/health.ts).
-  VERCEL_GIT_COMMIT_SHA: z.string().min(1).optional(),
-  npm_package_version: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
+
+// Fields that must survive blank-string stripping so an explicit-but-empty
+// value is rejected by its own validator instead of silently disappearing
+// and falling back to a default.
+const PRESERVE_BLANK_FOR = new Set(["NODE_ENV"]);
 
 export class EnvValidationError extends Error {
   readonly issues: z.core.$ZodIssue[];
@@ -69,13 +69,18 @@ export function loadEnv(source: unknown = process.env): Env {
  * `.env.example` documents optional keys as `KEY=` (blank). A developer
  * copying that template gets `process.env.KEY === ""`, which must mean
  * "unset", not "invalid" — an optional field's validators (`.url()`,
- * `.min(32)`, ...) would otherwise reject the blank string.
+ * `.min(32)`, ...) would otherwise reject the blank string. Arrays are
+ * passed through untouched so Zod's own "expected object" issue fires,
+ * instead of `Object.entries` silently coercing one into an empty-ish
+ * environment. `NODE_ENV` is exempt: a present-but-blank value is more
+ * likely a broken substitution than an intentional "unset", so it must
+ * fail enum validation rather than quietly falling back to the default.
  */
 function stripBlankValues(source: unknown): unknown {
-  if (typeof source !== "object" || source === null) return source;
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return source;
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
-    if (value === "") continue;
+    if (value === "" && !PRESERVE_BLANK_FOR.has(key)) continue;
     result[key] = value;
   }
   return result;
@@ -90,4 +95,23 @@ export function getEnv(): Env {
 
 export function resetEnvCacheForTests(): void {
   cached = undefined;
+}
+
+/**
+ * Deploy metadata (not in DEPLOYMENT.md §3; set by the platform/npm
+ * itself), validated independently of the full canonical `Env` schema.
+ * `lib/http/health.ts` uses this instead of `getEnv()` so a liveness
+ * probe never fails because an unrelated provider variable is malformed
+ * elsewhere in the environment.
+ */
+const deployMetadataSchema = z.object({
+  VERCEL_GIT_COMMIT_SHA: z.string().min(1).optional(),
+  npm_package_version: z.string().min(1).optional(),
+});
+
+export type DeployMetadata = z.infer<typeof deployMetadataSchema>;
+
+export function getDeployMetadata(source: unknown = process.env): DeployMetadata {
+  const result = deployMetadataSchema.safeParse(stripBlankValues(source));
+  return result.success ? result.data : {};
 }

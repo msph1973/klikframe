@@ -14,18 +14,21 @@ import {
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
-// Invoke the pinned local binaries directly rather than `npx`, which is
-// version-ambiguous (it can resolve or install a global/latest binary
-// when node_modules is absent) and would undermine this PR's exact-pin
-// goal for a gate that specifically proves version-sensitive behavior.
-const BIN_DIR = path.join(REPO_ROOT, "node_modules", ".bin");
+// Run the pinned local packages' JS entrypoints through this exact Node
+// binary, rather than `npx` (version-ambiguous: without node_modules it
+// can resolve/install a global "latest") or `node_modules/.bin/*` (on
+// Windows those are `.cmd`/`.ps1` shims plus a shell script that
+// `execFile`/`CreateProcess` cannot run without a shell). This keeps the
+// exact-pin goal while staying cross-platform.
+const TSC_ENTRYPOINT = path.join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc");
+const ESLINT_ENTRYPOINT = path.join(REPO_ROOT, "node_modules", "eslint", "bin", "eslint.js");
 
 describe("NFR-CQ-001 negative fixtures: forbidden any", () => {
   it("fails `tsc --noEmit --strict` on an implicit any parameter (TS7006)", async () => {
     await expect(
       execFileAsync(
-        path.join(BIN_DIR, "tsc"),
-        ["--noEmit", "-p", "tests/fixtures/negative/tsconfig.json"],
+        process.execPath,
+        [TSC_ENTRYPOINT, "--noEmit", "-p", "tests/fixtures/negative/tsconfig.json"],
         { cwd: REPO_ROOT },
       ),
     ).rejects.toMatchObject({
@@ -36,8 +39,8 @@ describe("NFR-CQ-001 negative fixtures: forbidden any", () => {
   it("fails ESLint on explicit `any` and unsafe member access", async () => {
     await expect(
       execFileAsync(
-        path.join(BIN_DIR, "eslint"),
-        ["--no-ignore", "tests/fixtures/negative/explicit-any.fixture.ts"],
+        process.execPath,
+        [ESLINT_ENTRYPOINT, "--no-ignore", "tests/fixtures/negative/explicit-any.fixture.ts"],
         { cwd: REPO_ROOT },
       ),
     ).rejects.toMatchObject({

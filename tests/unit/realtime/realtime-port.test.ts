@@ -21,7 +21,7 @@ describe("REALTIME_EVENT_TYPES", () => {
 });
 
 describe("RealtimeEventEnvelope", () => {
-  it("accepts every event type paired with its API_SPEC.md §9.6 resource type", () => {
+  it("accepts every one of the 5 event types paired with its API_SPEC.md §9.6 resource type", () => {
     const envelopes: RealtimeEventEnvelope[] = [
       {
         eventId: "evt_1",
@@ -34,18 +34,44 @@ describe("RealtimeEventEnvelope", () => {
         eventId: "evt_2",
         schemaVersion: 1,
         occurredAt: "2026-08-20T10:00:00Z",
-        eventType: "payment.recorded",
+        eventType: "invoice.updated",
         resource: { type: "invoice", id: "i_1" },
       },
       {
         eventId: "evt_3",
         schemaVersion: 1,
         occurredAt: "2026-08-20T10:00:00Z",
-        eventType: "selection.updated",
+        eventType: "payment.recorded",
+        resource: { type: "invoice", id: "i_2" },
+      },
+      {
+        eventId: "evt_4",
+        schemaVersion: 1,
+        occurredAt: "2026-08-20T10:00:00Z",
+        eventType: "gallery.published",
         resource: { type: "album", id: "a_1" },
       },
+      {
+        eventId: "evt_5",
+        schemaVersion: 1,
+        occurredAt: "2026-08-20T10:00:00Z",
+        eventType: "selection.updated",
+        resource: { type: "album", id: "a_2" },
+      },
     ];
-    expect(envelopes).toHaveLength(3);
+    expect(envelopes).toHaveLength(REALTIME_EVENT_TYPES.length);
+  });
+
+  it("rejects a mismatched event/resource pair at the type level", () => {
+    // @ts-expect-error contract.signed must pair with a contract resource, not an album
+    const invalid: RealtimeEventEnvelope = {
+      eventId: "evt_bad",
+      schemaVersion: 1,
+      occurredAt: "2026-08-20T10:00:00Z",
+      eventType: "contract.signed",
+      resource: { type: "album", id: "a_1" },
+    };
+    expect(invalid).toBeDefined();
   });
 });
 
@@ -88,6 +114,14 @@ describe("assertRealtimeTokenTtl", () => {
     const past = new Date(clock.now().getTime() - 1);
     expect(() => {
       assertRealtimeTokenTtl(clock, past);
+    }).toThrow(RangeError);
+  });
+
+  it("rejects an invalid Date instead of silently accepting a NaN ttl", () => {
+    const clock = new FixedClock(new Date("2026-08-20T10:00:00Z"));
+    const invalidDate = new Date("not-a-real-date");
+    expect(() => {
+      assertRealtimeTokenTtl(clock, invalidDate);
     }).toThrow(RangeError);
   });
 });

@@ -1,11 +1,12 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
-// Phase 0 ships unit coverage for foundation primitives only. `test:unit`
-// runs everything under tests/unit + tests/negative; `test:integration`
-// targets tests/integration directly with `--passWithNoTests` (TESTING.md
-// §6 ordering) until the data worktree (Step 2) adds a Hono + PostgreSQL
-// harness there.
+// Phase 0 ships unit coverage for foundation primitives only. `include`
+// lists all three test roots so `test:integration`'s CLI path filter can
+// discover files once they exist; the unit/integration split itself is
+// enforced by each npm script's own path argument (test:unit passes
+// "tests/unit tests/negative"; test:integration passes "tests/integration
+// --passWithNoTests"), not by this shared include list.
 export default defineConfig({
   resolve: {
     // Mirrors tsconfig.json's `paths` mapping for Vite's module resolver.

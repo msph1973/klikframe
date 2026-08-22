@@ -3,6 +3,7 @@ import {
   parseHeadings,
   parseLocalLinks,
   parseTables,
+  parseFencedBlocks,
   findUnterminatedFenceLine,
 } from "../../../scripts/docs/markdown.mjs";
 
@@ -24,6 +25,11 @@ describe("parseHeadings", () => {
 
   it("does not treat a `#` inside a fenced code block as a heading", () => {
     const content = ["```bash", "# not a heading", "```", ""].join("\n");
+    expect(parseHeadings(content)).toHaveLength(0);
+  });
+
+  it("does not close early on a >3-space-indented literal ``` inside the fence", () => {
+    const content = ["```text", "    ```", "still inside the fence", "```", ""].join("\n");
     expect(parseHeadings(content)).toHaveLength(0);
   });
 });
@@ -53,12 +59,30 @@ describe("parseTables", () => {
     expect(table?.rows[0]?.columns).toBe(2);
   });
 
+  it("splits a cell containing a pipe inside a double-backtick code span", () => {
+    const content = ["| A | B |", "|---|---|", "| ``a|b`` | c |", ""].join("\n");
+    const [table] = parseTables(content);
+    expect(table?.rows[0]?.columns).toBe(2);
+  });
+
   it("recognizes a table without outer pipes", () => {
     const content = ["Header1 | Header2", "------- | -------", "Row1 | Row2", ""].join("\n");
     const [table] = parseTables(content);
     expect(table).toBeDefined();
     expect(table?.headerColumns).toBe(2);
     expect(table?.rows[0]?.columns).toBe(2);
+  });
+
+  it("ends the table at a following prose line whose only pipe is inside a code span", () => {
+    const content = [
+      "| A | B |",
+      "|---|---|",
+      "| 1 | 2 |",
+      "Note the `a|b` separator is literal.",
+      "",
+    ].join("\n");
+    const [table] = parseTables(content);
+    expect(table?.rows).toHaveLength(1);
   });
 });
 
@@ -69,5 +93,27 @@ describe("findUnterminatedFenceLine", () => {
 
   it("returns the opening line of an unterminated fence", () => {
     expect(findUnterminatedFenceLine(["intro", "```json", "{}", ""].join("\n"))).toBe(2);
+  });
+
+  it("accepts a closer at least as long as a 4-backtick opener", () => {
+    expect(findUnterminatedFenceLine(["````json", "{}", "````", ""].join("\n"))).toBeNull();
+  });
+
+  it("supports ~~~ fences", () => {
+    expect(findUnterminatedFenceLine(["~~~json", "{}", "~~~", ""].join("\n"))).toBeNull();
+    expect(findUnterminatedFenceLine(["~~~json", "{}", ""].join("\n"))).toBe(1);
+  });
+});
+
+describe("parseFencedBlocks", () => {
+  it("parses a ~~~ fence the same as a ``` fence", () => {
+    const [block] = parseFencedBlocks(["~~~json", "{}", "~~~", ""].join("\n"), "json");
+    expect(block?.code).toBe("{}");
+  });
+
+  it("does not close a 3-backtick opener on a shorter/mismatched marker", () => {
+    const content = ["```json", "{}", "~~~", "still inside", "```", ""].join("\n");
+    const [block] = parseFencedBlocks(content, "json");
+    expect(block?.code).toBe("{}\n~~~\nstill inside");
   });
 });

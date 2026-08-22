@@ -29,20 +29,22 @@ const SENSITIVE_TOKENS = new Set(["SECRET", "PASSWORD", "TOKEN", "API_KEY", "PRI
 // Horizontal whitespace only around the delimiter/value: `\s` would also
 // match the newline after a *blank* `KEY=` assignment (as in .env.example)
 // and let the match continue into the next line's identifier as if it
-// were this key's value.
+// were this key's value. An optional quote before the delimiter handles
+// quoted JSON keys like `"SECRET": "..."`.
 const IDENTIFIER_ASSIGNMENT_PATTERN =
-  /\b([A-Z][A-Z0-9_]*)[ \t]*[:=][ \t]*["']?([A-Za-z0-9+/=_-]{16,})["']?/g;
+  /\b([A-Z][A-Z0-9_]*)["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9+/=_-]{16,})["']?/g;
 
 // Applied only to source/config/dotenv files (not documentation), where a
 // KEY=VALUE or "KEY": "VALUE" assignment with a long opaque value is
 // unambiguous.
 const ASSIGNMENT_RULE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".json", ".yml", ".yaml"]);
 
-// Test fixtures legitimately contain synthetic, clearly-fake secret-shaped
-// strings to exercise this very rule (see tests/unit/scripts/secret-scan.test.ts).
-// High-confidence provider-specific formats (AWS/GitHub/Slack/...) still
-// apply everywhere; only the generic heuristic is skipped here.
-const ASSIGNMENT_RULE_EXCLUDED_PREFIXES = ["tests/"];
+// This exact file legitimately contains synthetic, clearly-fake
+// secret-shaped strings to exercise this very rule. Scoped to the exact
+// path (not a `tests/` prefix) so a real secret committed anywhere else
+// under tests/ is still caught; high-confidence provider-specific formats
+// (AWS/GitHub/Slack/...) still apply even to this file.
+const ASSIGNMENT_RULE_EXCLUDED_FILES = new Set(["tests/unit/scripts/secret-scan.test.ts"]);
 
 function isDotenvFile(relativePath) {
   const base = path.basename(relativePath);
@@ -73,9 +75,7 @@ export function scanContent(relativePath, content) {
     const match = rule.pattern.exec(content);
     if (match) findings.push({ file: relativePath, rule: rule.name, sample: redact(match[0]) });
   }
-  const isExcludedFromAssignmentRule = ASSIGNMENT_RULE_EXCLUDED_PREFIXES.some((prefix) =>
-    relativePath.startsWith(prefix),
-  );
+  const isExcludedFromAssignmentRule = ASSIGNMENT_RULE_EXCLUDED_FILES.has(relativePath);
   if (
     !isExcludedFromAssignmentRule &&
     (ASSIGNMENT_RULE_EXTENSIONS.has(path.extname(relativePath)) || isDotenvFile(relativePath))
