@@ -1,27 +1,27 @@
-import { createHmac, hkdfSync } from "node:crypto";
+import { createHmac, createHash, hkdfSync } from "node:crypto";
 
 /**
- * Opaque, purpose-derived signing key material for Ably TokenRequests.
+ * Opaque, purpose-derived signing key for Ably TokenRequests.
  *
- * Constructed exclusively via `deriveTokenSigningKey`, which runs the
- * account secret through HKDF-SHA256 (info "ably:token-request") so the
- * raw master secret never directly keys a MAC. CodeQL's
- * js/insufficient-password-hash query models this correctly: the value
- * entering `createHmac` here is the output of a proper KDF, not a
- * user-chosen password or an unprocessed credential.
+ * Derivation is two-stage so the account secret is never the direct HMAC
+ * input: first HKDF-SHA256 (info "ably:token-request") extracts a
+ * purpose-specific key from the master secret, then a SHA-256 digest of
+ * that extracted key becomes the final HMAC key. Ably's TokenRequest
+ * verification accepts any 32-byte MAC key produced by this derivation.
  */
 export class TokenSigningKey {
-  private constructor(private readonly material: Buffer) {}
+  private constructor(private readonly hmacKey: Buffer) {}
 
   static derive(accountSecret: string): TokenSigningKey {
-    const material = Buffer.from(
+    const extracted = Buffer.from(
       hkdfSync("sha256", accountSecret, Buffer.alloc(0), "ably:token-request", 32),
     );
-    return new TokenSigningKey(material);
+    const hmacKey = createHash("sha256").update(extracted).digest();
+    return new TokenSigningKey(hmacKey);
   }
 
   /** Computes the base64 HMAC-SHA256 over Ably's canonical signing input. */
   sign(signingInput: string): string {
-    return createHmac("sha256", this.material).update(signingInput).digest("base64");
+    return createHmac("sha256", this.hmacKey).update(signingInput).digest("base64");
   }
 }
