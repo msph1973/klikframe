@@ -3,11 +3,11 @@ import { createHmac, createHash, hkdfSync } from "node:crypto";
 /**
  * Opaque, purpose-derived signing key for Ably TokenRequests.
  *
- * Derivation is two-stage so the account secret is never the direct HMAC
- * input: first HKDF-SHA256 (info "ably:token-request") extracts a
- * purpose-specific key from the master secret, then a SHA-256 digest of
- * that extracted key becomes the final HMAC key. Ably's TokenRequest
- * verification accepts any 32-byte MAC key produced by this derivation.
+ * Two-stage derivation: (1) HKDF-SHA256 with info
+ * "ably:token-request" extracts a purpose-specific key from the master
+ * secret; (2) a SHA-256 digest of that extracted key becomes the final
+ * HMAC key. The account secret is therefore never the direct input to
+ * any MAC computation.
  */
 export class TokenSigningKey {
   private constructor(private readonly hmacKey: Buffer) {}

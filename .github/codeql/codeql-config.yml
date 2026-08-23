@@ -1,0 +1,14 @@
+# CodeQL configuration for KlikFrame.
+#
+# paths/paths-ignore scope the analysis. Query filters for specific rules
+# are configured in the workflow's `queries` block if ever needed.
+
+paths:
+  - app
+  - lib
+  - proxy.ts
+
+paths-ignore:
+  - tests
+  - scripts
+  - drizzle
