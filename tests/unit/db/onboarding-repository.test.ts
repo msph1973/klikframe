@@ -279,3 +279,38 @@ describe("createActiveOwnerMembership retry semantics", () => {
     expect(tx.insertCalls).toBe(1);
   });
 });
+
+
+describe("createActiveOwnerMembership fresh-onboarding fast path", () => {
+  it("PRRT_kwDOT_C_FM6biuYn: skips the retry pre-SELECT when the workspace was created this transaction", async () => {
+    // Fresh-onboarding path: `skipExistingLookup` must suppress the
+    // membership SELECT entirely — only the insert may run. A canned
+    // select-membership answer would go unconsumed and the fake would not
+    // notice, so the empty queue proves no SELECT was issued: any SELECT
+    // would shift the insert's canned answer and fail.
+    const tx = makeFakeTx([
+      { kind: "insert-returning", rows: [{ id: "mem-new" }] },
+    ]);
+    const id = await createActiveOwnerMembership(tx, {
+      workspaceId: "ws-4",
+      authUserId: "owner-F",
+      now: NOW,
+      skipExistingLookup: true,
+    });
+    expect(id).toBe("mem-new");
+    expect(tx.insertCalls).toBe(1);
+  });
+
+  it("still performs the pre-SELECT on the default (retry) path", async () => {
+    const tx = makeFakeTx([
+      { kind: "select-membership", rows: [] },
+      { kind: "insert-returning", rows: [{ id: "mem-new" }] },
+    ]);
+    await createActiveOwnerMembership(tx, {
+      workspaceId: "ws-3",
+      authUserId: "owner-E",
+      now: NOW,
+    });
+    expect(tx.insertCalls).toBe(1);
+  });
+});

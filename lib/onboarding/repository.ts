@@ -160,6 +160,15 @@ export interface MembershipInput {
   readonly workspaceId: string;
   readonly authUserId: string;
   readonly now: Date;
+  /**
+   * True when the caller knows the workspace row was inserted earlier in
+   * this same transaction (see {@link WorkspaceRecord.created}). The
+   * pre-SELECT below serves idempotent retries of an already-committed
+   * onboarding; on the fresh path it can never observe a committed
+   * membership for a workspace born inside this same uncommitted
+   * transaction, so it is pure round-trip overhead and is skipped.
+   */
+  readonly skipExistingLookup?: boolean;
 }
 
 /**
@@ -167,26 +176,30 @@ export interface MembershipInput {
  * identity + workspace (idempotent retry after a first commit), otherwise
  * inserts it fresh. Callers must have serialized same-identity onboarding
  * via {@link withAdvisoryLock}; the partial unique indexes still reject any
- * second active owner at the database level.
+ * second active owner at the database level. Pass
+ * `skipExistingLookup: true` when the workspace was created earlier in this
+ * same transaction — the retry lookup cannot match there and is skipped.
  */
 export async function createActiveOwnerMembership(
   tx: DbTx,
   input: MembershipInput,
 ): Promise<string> {
-  const existing = await tx
-    .select({ id: workspaceMembers.id })
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, input.workspaceId),
-        eq(workspaceMembers.authUserId, input.authUserId),
-        eq(workspaceMembers.role, "owner"),
-        eq(workspaceMembers.status, "active"),
-      ),
-    )
-    .limit(1);
-  if (existing[0] !== undefined) {
-    return existing[0].id;
+  if (input.skipExistingLookup !== true) {
+    const existing = await tx
+      .select({ id: workspaceMembers.id })
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, input.workspaceId),
+          eq(workspaceMembers.authUserId, input.authUserId),
+          eq(workspaceMembers.role, "owner"),
+          eq(workspaceMembers.status, "active"),
+        ),
+      )
+      .limit(1);
+    if (existing[0] !== undefined) {
+      return existing[0].id;
+    }
   }
 
   const rows = await tx

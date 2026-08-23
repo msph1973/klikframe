@@ -76,6 +76,10 @@ export async function runOnboardingTransaction(
       workspaceId: workspace.id,
       authUserId: input.profile.authUserId,
       now: input.workspace.now,
+      // Fresh-onboarding path (PRRT_kwDOT_C_FM6biuYn follow-up): when this
+      // transaction just created the workspace, the retry pre-SELECT cannot
+      // match a committed membership and is skipped.
+      skipExistingLookup: workspace.created,
     });
     const auditId = await appendAuditEvent(tx, {
       workspaceId: workspace.id,

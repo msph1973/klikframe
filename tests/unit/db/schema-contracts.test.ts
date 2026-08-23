@@ -15,7 +15,11 @@ import {
   workspaceStatusEnum,
   workspaces,
 } from "../../../lib/db/schema";
-import { computeCanonicalBodyHash } from "../../../lib/idempotency/idempotency-port";
+import {
+  computeCanonicalBodyHash,
+  IDEMPOTENCY_MIN_TTL_HOURS,
+  IDEMPOTENCY_MIN_TTL_MS,
+} from "../../../lib/idempotency/idempotency-port";
 
 /**
  * Schema-shape contracts (DATABASE_SCHEMA.md §2/§5) plus the database
@@ -227,6 +231,50 @@ describe("audit_events append-only enforcement lives in the migration", () => {
     expect(migrationSql).not.toMatch(
       /CREATE TRIGGER "audit_events_append_only"[^;]*TRUNCATE[^;]*FOR EACH ROW/,
     );
+  });
+});
+
+describe("frozen 24h replay TTL stays in sync across port, schema, and migration", () => {
+  // PRRT_kwDOT_C_FM6biuYr: the CHECK constraint used to re-declare the
+  // frozen window as a raw SQL literal in three places (port constant,
+  // drizzle table, migration SQL). The schema now renders the interval from
+  // IDEMPOTENCY_MIN_TTL_HOURS, which is itself derived from
+  // IDEMPOTENCY_MIN_TTL_MS; these tests pin the remaining seams so a change
+  // to the canonical constant cannot silently diverge from the SQL that the
+  // database actually enforces.
+  const dialect = new PgDialect();
+
+  it("renders the schema CHECK interval from the canonical constant, not a literal", () => {
+    const check = getTableConfig(idempotencyRequests).checks.find(
+      (candidate) => candidate.name === "idempotency_requests_expiry_after_creation_check",
+    );
+    expect(check).toBeDefined();
+    if (check === undefined) return;
+    const checkValue: Parameters<typeof dialect.sqlToQuery>[0] = check.value;
+    const rendered = dialect.sqlToQuery(checkValue).sql;
+    const expectedInterval = `interval '${String(IDEMPOTENCY_MIN_TTL_HOURS)} hours'`;
+    expect(rendered).toBe(
+      `"idempotency_requests"."expires_at" >= "idempotency_requests"."created_at" + ${expectedInterval}`,
+    );
+  });
+
+  it("keeps the checked-in migration's CHECK on the same window as the schema", () => {
+    const migrationSql = readFileSync("drizzle/0000_init_data_layer.sql", "utf8");
+    const expectedInterval = `interval '${String(IDEMPOTENCY_MIN_TTL_HOURS)} hours'`;
+    const expected =
+      `CONSTRAINT "idempotency_requests_expiry_after_creation_check" ` +
+      `CHECK ("idempotency_requests"."expires_at" >= "idempotency_requests"."created_at" ` +
+      `+ ${expectedInterval})`;
+    expect(migrationSql).toContain(expected);
+    const literals = migrationSql.match(/interval '\d+ hours'/g) ?? [];
+    expect(literals.every((literal) => literal === expectedInterval)).toBe(true);
+    // The migration must actually carry the CHECK whose window we pinned.
+    expect(literals).not.toEqual([]);
+  });
+
+  it("derives the hours value from the milliseconds constant without rounding", () => {
+    expect(IDEMPOTENCY_MIN_TTL_MS % (60 * 60 * 1000)).toBe(0);
+    expect(IDEMPOTENCY_MIN_TTL_HOURS * 60 * 60 * 1000).toBe(IDEMPOTENCY_MIN_TTL_MS);
   });
 });
 

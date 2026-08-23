@@ -12,6 +12,8 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
+import { IDEMPOTENCY_MIN_TTL_HOURS } from "@/lib/idempotency/idempotency-port";
+
 import { workspaces } from "./workspaces";
 
 /**
@@ -54,11 +56,15 @@ export const idempotencyRequests = pgTable(
     unique("idempotency_requests_workspace_id_id_key").on(table.workspaceId, table.id),
     index("idempotency_requests_expires_at_idx").on(table.expiresAt),
     // Frozen replay contract (API_SPEC.md §1.4): a record must stay live
-    // for its full 24h window, never expire before it is created
-    // (PRRT_kwDOT_C_FM6bh72I).
+    // for its full minimum-TTL window, never expire before it is created
+    // (PRRT_kwDOT_C_FM6bh72I). The interval is derived from the canonical
+    // constant in lib/idempotency/idempotency-port.ts — the checked-in
+    // migration (drizzle/0000_init_data_layer.sql) bakes the same value in
+    // as SQL, and tests/unit/db/schema-contracts.test.ts asserts schema,
+    // migration, and port stay in sync (PRRT_kwDOT_C_FM6biuYr).
     check(
       "idempotency_requests_expiry_after_creation_check",
-      sql`${table.expiresAt} >= ${table.createdAt} + interval '24 hours'`,
+      sql`${table.expiresAt} >= ${table.createdAt} + interval '${sql.raw(String(IDEMPOTENCY_MIN_TTL_HOURS))} hours'`,
     ),
   ],
 );

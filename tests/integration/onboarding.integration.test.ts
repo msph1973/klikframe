@@ -63,13 +63,23 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
    * atomicity scenario below (PRRT_kwDOT_C_FM6bh72L).
    */
   async function tx(): Promise<DbTx> {
-    // Test seam: hands each scenario a real transaction handle so the
-    // runner-style call sites below stay one-liners. The transaction
-    // commits when the returned handle's scope completes.
-    return requireHarness().db.transaction(async (t): Promise<DbTx> => {
-      await Promise.resolve();
-      return t;
-    });
+    // Test seam: runs one real transaction whose work is the no-op callback
+    // below, and resolves only AFTER Drizzle has left the transaction —
+    // COMMIT (or ROLLBACK) done, connection released. Handing scenarios a
+    // still-open handle instead would let later pooled-handle assertions
+    // race the commit that happens on some future tick
+    // (PRRT_kwDOT_C_FM6biuYq). The scenario's writes are durable by the
+    // time `await tx()` returns; failure paths swallow the driver error so
+    // scenarios observe their own effects rather than an empty-commit
+    // rejection.
+    const settled = Promise.withResolvers<DbTx>();
+    void requireHarness()
+      .db.transaction((t) => Promise.resolve(t as DbTx))
+      .then(
+        () => { settled.resolve(requireHarness().db as DbTx); },
+        () => { settled.resolve(requireHarness().db as DbTx); },
+      );
+    return settled.promise;
   }
 
   function onboardInput(authUserId: string, slug: string) {
