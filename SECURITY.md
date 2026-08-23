@@ -38,13 +38,13 @@ Urutan wajib endpoint owner: **resolve session → active owner membership → a
 - Menggunakan **Drizzle ORM** dengan parameterized queries.
 - Tidak ada query string mentah (`sql.raw` hanya jika perlu dan dengan binding).
 
-## 4. File Upload (S3-only)
+## 4. File Upload (Civo S3 Object Storage)
 
-- Upload selalu memakai presign → direct S3 upload → finalize. Presign hanya mengizinkan key acak ber-prefix workspace/purpose, content length, checksum, MIME allowlist, dan expiry singkat.
+- Upload selalu memakai presign → direct object-storage upload → finalize. Presign hanya mengizinkan key acak ber-prefix workspace/purpose, content length, checksum, MIME allowlist, dan expiry singkat.
 - Gallery image menerima JPEG/PNG/WebP maksimal 20 MB; payment proof menerima JPEG/PNG/PDF maksimal 10 MB; signature hanya PNG yang dibatasi ukuran. Finalize memeriksa magic bytes, size, checksum, key, ownership, dan object existence.
-- File disimpan di **AWS S3** (private bucket, `Block Public Access = ON`). Database menyimpan key dan metadata, bukan signed URL; akses download hanya lewat URL CloudFront ber-expiry.
+- File disimpan di **Civo S3 Object Storage** (private bucket, `Block Public Access = ON`). Database menyimpan key dan metadata, bukan signed URL; akses download hanya lewat presigned download URL ber-expiry yang dihasilkan server on-demand.
 - Row upload tetap `pending` sampai finalize, lalu `available` atau `quarantined`/`failed`. Cleanup menghapus pending expired, checksum mismatch, dan orphan object secara idempotent.
-- S3 bucket: versioning ON, SSE-S3, lifecycle sesuai retention/legal hold, CORS hanya untuk `https://app.klikframe.id`.
+- Bucket: versioning ON, server-side encryption, lifecycle sesuai retention/legal hold, CORS hanya untuk `https://app.klikframe.id`.
 - Scan malware opsional dengan ClamAV (Post-MVP).
 
 ## 5. Payment Webhook Security (Post-MVP — nonaktif di MVP)
@@ -109,8 +109,8 @@ Legal hold menunda expiry hanya untuk record yang disebut, mencatat actor/alasan
 ## 9. Secrets Management
 
 - Nama environment variable kanonis hanya didefinisikan di `DEPLOYMENT.md` §3. Nilai berada pada Vercel/CI secret store dan password manager; tidak ada secret atau private endpoint literal di Git, log, memory, maupun preview output.
-- `NEON_AUTH_COOKIE_SECRET`, `UPLOAD_CAPABILITY_SECRET`, dan `CRON_SECRET` memakai nilai random independen minimal 32 byte. `ABLY_API_KEY` hanya tersedia server-side; rotasi mencabut key lama setelah overlap token expiry. Rotasi auth secret menginvalidasi session; CloudFront memakai overlap key group; semua rotation diaudit tanpa menyimpan nilai.
-- AWS credential memakai IAM principal least-privilege pada prefix environment. App tidak memiliki bucket-policy/IAM mutation. Secret scan wajib pada pull request dan sebelum Git initialization/import.
+- `NEON_AUTH_COOKIE_SECRET`, `UPLOAD_CAPABILITY_SECRET`, dan `CRON_SECRET` memakai nilai random independen minimal 32 byte. `ABLY_API_KEY` hanya tersedia server-side; rotasi mencabut key lama setelah overlap token expiry. Rotasi auth secret menginvalidasi session; semua rotation diaudit tanpa menyimpan nilai.
+- Civo object-storage credential memakai principal least-privilege pada bucket/prefix environment (`PutObject/GetObject/HeadObject/DeleteObject`). `S3_ENDPOINT` wajib https dan tidak boleh berupa endpoint privat di luar allowlist. App tidak memiliki bucket-policy mutation. Secret scan wajib pada pull request dan sebelum Git initialization/import.
 - `opencode.json` adalah tooling lokal dan mengikuti `TOOLING.md`; provider/MCP token serta endpoint privat hanya lewat environment.
 
 ## 10. Incident Response
@@ -132,6 +132,5 @@ Kontrol wajib:
 - Install script, native binary, Git dependency, lifecycle hook, dan newly-published package memerlukan review tambahan; token CI least-privilege dan tidak tersedia pada untrusted fork.
 - npm publishing (jika kelak ada) memakai 2FA/trusted publishing; application build tidak membutuhkan npm write token.
 - Security exception mencatat package/advisory, exposure, compensating control, owner, dan expiry. Expired exception memblokir release.
-- Runtime permission flag bukan sandbox; Vercel/AWS/database roles tetap least privilege.
-
+- Runtime permission flag bukan sandbox; Vercel/Civo/database roles tetap least privilege.
 Baseline diverifikasi ulang terhadap sumber resmi sebelum scaffold dan setiap upgrade. Lockfile/SBOM menjadi bukti versi aktual yang dirilis.

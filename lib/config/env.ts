@@ -20,11 +20,11 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
   AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
   AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  // DEPLOYMENT.md §3: the Civo object-storage endpoint must be https so
+  // presigned-URL query credentials never travel in cleartext.
+  S3_ENDPOINT: z.url({ protocol: /^https$/ }).optional(),
   AWS_REGION: z.string().min(1).optional(),
   S3_BUCKET: z.string().min(1).optional(),
-  CLOUDFRONT_DOMAIN: z.string().min(1).optional(),
-  CLOUDFRONT_KEY_PAIR_ID: z.string().min(1).optional(),
-  CLOUDFRONT_PRIVATE_KEY: z.string().min(1).optional(),
   UPLOAD_CAPABILITY_SECRET: z.string().min(32).optional(),
   DATA_ENCRYPTION_KEY: z.string().min(1).optional(),
   CRON_SECRET: z.string().min(32).optional(),
