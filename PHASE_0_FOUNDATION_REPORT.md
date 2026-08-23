@@ -20,10 +20,10 @@ PR terbuka, seluruh CI checks hijau pada HEAD terbaru, seluruh temuan BOT tersel
 | Baseline commit (`main`) | `d9597f6821f42410eadc8a1137e4f9e1822d987b` |
 | Foundation branch | `foundation/phase-0-scaffold` |
 | Worktree path | `/root/klik-foundation` |
-| Foundation commit (HEAD) | `ba60a0f42abd9bf5df3036ddd81770af36994581` |
+| Foundation commit (HEAD) | `7e560f30a615d0793d28b88b24a98e5588939dac` |
 | PR | [msph1973/klikframe#1](https://github.com/msph1973/klikframe/pull/1) |
 | State PR | `OPEN`, `MERGEABLE`, mergeState `CLEAN`, `mergedAt: null` |
-| Total perubahan | 67 file, ±11.4k baris |
+| Total perubahan | 68 file, ±11.4k baris |
 
 Rantai commit foundation (terlama → terbaru):
 
@@ -38,6 +38,7 @@ ad906b0 fix: address round-3 cubic-dev-ai findings (Set-Cookie loss and markdown
 b34e9db docs: add Phase 0 Wave 0 foundation implementation report
 09a3e5d feat(docs-check): implement full TESTING.md section 8 static validation
 ba60a0f fix(docs-check): remove EVENT_NAME_PATTERN superseded by embedded variant
+7e560f3 refactor(docs-check): extract STATUS_STOPWORDS to keep files under review target
 ```
 
 ## Git Bootstrap
@@ -68,7 +69,7 @@ ba60a0f fix(docs-check): remove EVENT_NAME_PATTERN superseded by embedded varian
 `lib/auth/identity-session-port.ts`, `lib/auth/server.ts`, `lib/db/transaction-port.ts`, `lib/idempotency/idempotency-port.ts`, `lib/realtime/realtime-port.ts`, `lib/shared/clock.ts`, `lib/shared/id.ts`, `lib/shared/provider-error.ts`
 
 ### Quality Gates
-`scripts/docs-check.mjs`, `scripts/docs/markdown.mjs`, `scripts/docs/rules.mjs`, `scripts/docs/section8-rules.mjs`, `scripts/docs/canonical-vocabulary.mjs` (+ deklarasi `.d.mts`), `scripts/check-file-size.mjs` (+`.d.mts`), `scripts/secret-scan.mjs` (+`.d.mts`), `scripts/e2e-placeholder.mjs`, `config/file-size-allowlist.json`
+`scripts/docs-check.mjs`, `scripts/docs/markdown.mjs`, `scripts/docs/rules.mjs`, `scripts/docs/section8-rules.mjs`, `scripts/docs/canonical-vocabulary.mjs`, `scripts/docs/stopwords.mjs` (+ deklarasi `.d.mts`), `scripts/check-file-size.mjs` (+`.d.mts`), `scripts/secret-scan.mjs` (+`.d.mts`), `scripts/e2e-placeholder.mjs`, `config/file-size-allowlist.json`
 
 ### CI
 `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `.github/dependabot.yml`
@@ -166,8 +167,7 @@ Exit code `gh pr checks`: **0** (semua hijau).
 
 | Bot | Status akhir |
 |---|---|
-| **gitar-bot** | ✅ APPROVED — auto-approve ("No blocking issues found"), findings awal (locale-dependent sort, undefined hashing) resolved |
-| **cubic-dev-ai** | ✅ Konvergen setelah 5 putaran review. Pass terakhir (HEAD `ba60a0f`): **"0 issues found across 1 file"** |
+| **cubic-dev-ai** | ✅ Konvergen setelah 6 putaran review. Pass terakhir pada HEAD `7e560f3`: 1 temuan P3 metadata (laporan tertinggal satu commit) — diperbaiki di commit laporan ini; tidak ada isu kode tersisa |
 | CodeRabbit | Pass — skip by configuration (repo OSS <10 stars); opsi trigger manual tersedia di PR |
 
 ---
