@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { withAdvisoryLock } from "@/lib/db/advisory-lock";
 import type { DbTx } from "@/lib/db/transaction-runner";
-import { withAdvisoryLock } from "@/lib/db/transaction-runner";
 
 import { idempotencyRequests } from "@/lib/db/schema/idempotency-requests";
 import {
