@@ -69,7 +69,7 @@ ba60a0f fix(docs-check): remove EVENT_NAME_PATTERN superseded by embedded varian
 `lib/auth/identity-session-port.ts`, `lib/auth/server.ts`, `lib/db/transaction-port.ts`, `lib/idempotency/idempotency-port.ts`, `lib/realtime/realtime-port.ts`, `lib/shared/clock.ts`, `lib/shared/id.ts`, `lib/shared/provider-error.ts`
 
 ### Quality Gates
-`scripts/docs-check.mjs`, `scripts/docs/markdown.mjs`, `scripts/docs/rules.mjs`, `scripts/docs/section8-rules.mjs`, `scripts/docs/canonical-vocabulary.mjs`, `scripts/docs/stopwords.mjs` (+ deklarasi `.d.mts`), `scripts/check-file-size.mjs` (+`.d.mts`), `scripts/secret-scan.mjs` (+`.d.mts`), `scripts/e2e-placeholder.mjs`, `config/file-size-allowlist.json`
+`scripts/docs-check.mjs`, `scripts/docs/markdown.mjs`, `scripts/docs/rules.mjs`, `scripts/docs/section8-rules.mjs` (+ deklarasi `section8-rules.d.mts`), `scripts/docs/canonical-vocabulary.mjs`, `scripts/docs/markdown.d.mts`, `scripts/docs/rules.d.mts`, `scripts/docs/stopwords.mjs` (tanpa deklarasi — hanya satu konstanta Set), `scripts/check-file-size.mjs` (+`.d.mts`), `scripts/secret-scan.mjs` (+`.d.mts`), `scripts/e2e-placeholder.mjs`, `config/file-size-allowlist.json`
 
 ### CI
 `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `.github/dependabot.yml`
@@ -240,6 +240,6 @@ Exit code `gh pr checks`: **0** (semua hijau).
 
 ## Langkah Berikutnya (untuk Anda)
 
-1. Review PR [#1](https://github.com/msph1973/klikframe/pull/1) — diff 67 file, deskripsi lengkap di body PR.
+1. Review PR [#1](https://github.com/msph1973/klikframe/pull/1) — diff 68 file, deskripsi lengkap di body PR.
 2. Jika setuju: berikan instruksi eksplisit "merge PR #1" (agen tidak akan merge tanpa instruksi tersebut).
 3. Setelah merge: Wave 1A (data: schema/migration/repository) dan Wave 1B (provider: ports/adapters/Ably) siap dikerjakan paralel dari merge-commit hasil PR #1 (bukan SHA cabang foundation) sesuai plan.
