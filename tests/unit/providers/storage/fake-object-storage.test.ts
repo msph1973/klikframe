@@ -125,6 +125,8 @@ describe("FakeObjectStorage — malformed URL handling", () => {
     await expect(
       store.consumePresignedUpload({
         outcome: {
+          kind: "success",
+          method: "PUT",
           url: "::not a url::",
           expiresAt: new Date(BASE.getTime() + 60_000),
           requiredHeaders: { "content-type": "image/png", "x-amz-checksum-sha256": CHECKSUM },
