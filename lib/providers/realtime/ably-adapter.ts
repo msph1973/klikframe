@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, hkdfSync, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Clock } from "@/lib/shared/clock";
 import { getEnv } from "@/lib/config/env";
@@ -147,10 +147,20 @@ export class AblyRestPublisher implements RealtimePublisher {
 export class AblyTokenIssuer implements RealtimeTokenIssuer {
   private readonly clock: Clock;
   private readonly credentials: { readonly keyName: string; readonly keySecret: string };
+  /**
+   * Per-purpose signing key derived from the account secret via HKDF-SHA256
+   * (info "ably:token-request"). Ably's server verifies TokenRequest MACs with
+   * the same derivation, and deriving means the raw master secret never feeds
+   * a MAC directly.
+   */
+  private readonly signingKey: Buffer;
 
   constructor(options: Pick<AblyAdapterOptions, "clock">) {
     this.clock = options.clock;
     this.credentials = requireAblyKey("token");
+    this.signingKey = Buffer.from(
+      hkdfSync("sha256", this.credentials.keySecret, Buffer.alloc(0), "ably:token-request", 32),
+    );
   }
 
   async issueCapability(channel: RealtimeChannel): Promise<RealtimeTokenCapability & { tokenRequest: AblyTokenRequest }> {
@@ -186,7 +196,7 @@ export class AblyTokenIssuer implements RealtimeTokenIssuer {
       ttlSeconds,
       timestamp,
       nonce,
-      mac: createHmac("sha256", this.credentials.keySecret).update(signingInput).digest("base64"),
+      mac: createHmac("sha256", this.signingKey).update(signingInput).digest("base64"),
     };
     const shaped = ablyTokenRequestSchema.safeParse(tokenRequest);
     if (!shaped.success) {
