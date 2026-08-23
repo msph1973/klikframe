@@ -4,10 +4,9 @@ import { REQUEST_ID_HEADER, isValidRequestId } from "../../../lib/http/request-i
 import { resetEnvCacheForTests } from "../../../lib/config/env";
 
 // createApp() wires the identity session port at composition time. Under
-// NODE_ENV=test the adapter factory still builds the real adapter (fresh,
-// uncached), so a minimal placeholder auth URL must be provisioned here —
-// mirroring what production provides via DEPLOYMENT.md §3.
-process.env.NEON_AUTH_BASE_URL = "https://auth.example-neon.test";
+// NODE_ENV=test that wiring hands out the deterministic fake identity
+// port, so no auth provider env is needed here — the suite exercises the
+// HTTP surface without touching JWKS/network.
 (process.env as Record<string, string | undefined>).NODE_ENV = "test";
 resetEnvCacheForTests();
 

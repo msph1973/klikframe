@@ -150,9 +150,25 @@ export class FakeObjectStorage {
     });
   }
 
-  /** Test seam: simulates a GET against a presigned download URL. */
+  /**
+   * Test seam: simulates a GET against a presigned download URL. A
+   * structurally invalid URL surfaces as the sanitized malformed_response
+   * branch (the same taxonomy the real adapter uses for unparseable
+   * provider responses) instead of a raw TypeError from `new URL`
+   * (cubic PRRT_kwDOT_C_FM6bh9nz); a parseable URL that references no
+   * known object stays a permanent capability error.
+   */
   async consumePresignedDownload(url: string): Promise<StoredObject & { key: string }> {
     await Promise.resolve();
+    try {
+      new URL(url);
+    } catch {
+      throw new ProviderError(
+        "malformed_response",
+        { provider: "storage", operation: "presignDownload" },
+        "The storage URL is not a valid URL",
+      );
+    }
     const key = urlKeyOf(url, "download");
     if (key !== null) {
       const stored = this.objects.get(key);

@@ -5,6 +5,12 @@ import { resetEnvCacheForTests } from "../../../lib/config/env";
  * Composition contract (lib/providers/composition.ts): fakes in test
  * runtime, real adapters elsewhere; construction is deterministic and
  * cached. Env fixtures use clearly-fake placeholder values.
+ *
+ * These suites intentionally use `await import()` for the composition
+ * modules: they are `server-only` singletons that capture env through
+ * getEnv() during module init, so each test must mutate process.env and
+ * reset the env cache BEFORE the module graph loads. Static imports would
+ * initialize against whatever env ran first and leak state across tests.
  */
 function envAll(): void {
   (process.env as Record<string, string | undefined>).NODE_ENV = "test";
@@ -52,17 +58,35 @@ describe("provider composition", () => {
     resetProvidersForTests();
   });
 
-  it("wires the Neon Auth adapter into lib/auth/server", async () => {
+  it("wires the deterministic fake port under NODE_ENV=test", async () => {
     envAll();
     const { wireIdentitySessionPort } = await import("../../../lib/providers/composition");
     const { getIdentitySessionPort } = await import("../../../lib/auth/server");
+    const { getFakeIdentitySessionPort } = await import(
+      "../../../lib/auth/fake-identity-session-port"
+    );
     wireIdentitySessionPort();
     const port = getIdentitySessionPort();
-    expect(port.constructor.name).toBe("NeonAuthAdapter");
-    // Missing credentials on an unwired request resolve unauthenticated.
-    await expect(
-      port.resolveSession(new Request("https://app.example.com/")),
-    ).resolves.toEqual({ kind: "unauthenticated" });
+    // The TESTING.md §2.2 IdentitySessionPort test adapter — never the
+    // real Neon adapter — so unit suites resolve sessions without JWKS
+    // network access or NEON_AUTH_BASE_URL provisioning.
+    expect(port).toBe(getFakeIdentitySessionPort());
+    // Seeding flows through the wired composition point unchanged.
+    getFakeIdentitySessionPort().seed({
+      kind: "authenticated",
+      session: {
+        identity: { authUserId: "user-1", email: null },
+        issuedAt: new Date(0),
+        expiresAt: new Date(1),
+      },
+    });
+    await expect(port.resolveSession(new Request("https://app.example.com/"))).resolves.toMatchObject(
+      { kind: "authenticated", session: { identity: { authUserId: "user-1" } } },
+    );
+    getFakeIdentitySessionPort().seed({ kind: "unauthenticated" });
+    await expect(port.resolveSession(new Request("https://app.example.com/"))).resolves.toEqual({
+      kind: "unauthenticated",
+    });
   });
 
   it("caches the identity adapter outside test runtime — one shared instance", async () => {

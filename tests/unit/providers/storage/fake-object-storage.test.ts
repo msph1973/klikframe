@@ -105,6 +105,27 @@ describe("FakeObjectStorage — expiry enforcement", () => {
   });
 });
 
+describe("FakeObjectStorage — malformed URL handling", () => {
+  it("surfaces an unparseable download URL as sanitized malformed_response", async () => {
+    const store = storage();
+    // `new URL` throws a raw TypeError before any branch could run — the
+    // consume helper must translate that into the provider taxonomy
+    // instead of leaking the parse failure (cubic PRRT_kwDOT_C_FM6bh9nz).
+    await expect(store.consumePresignedDownload("not a url at all")).rejects.toMatchObject({
+      kind: "malformed_response",
+      provider: "storage",
+      operation: "presignDownload",
+    });
+  });
+
+  it("keeps a parseable but unknown-object download URL a permanent error", async () => {
+    const store = storage();
+    await expect(
+      store.consumePresignedDownload("https://fake-storage.internal/download/missing.jpg?expires=99999999999999"),
+    ).rejects.toMatchObject({ kind: "permanent", operation: "presignDownload" });
+  });
+});
+
 describe("FakeObjectStorage — URL identity (exact operation + path)", () => {
   it("does not resolve a download URL for a different key sharing the prefix", async () => {
     const store = storage();

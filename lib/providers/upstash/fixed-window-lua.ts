@@ -8,13 +8,22 @@
  * Contract (identical to `FakeRateLimiter`):
  * - Window index = floor(now / windowSeconds); bucket key `<key>:<index>`.
  * - Every window is INCREMENTED in this one call; a window that is already
- *   full is rolled back to its limit and reported as the sentinel `0`
- *   (a granted row is always >= 1, so 0 is unambiguous).
+ *   full has that surplus INCR rolled back via DECR and reports the
+ *   sentinel `0`. The sentinel — not the post-decrement count — keeps
+ *   blockage detectable from the row alone: `used - 1` would equal
+ *   `limit`, indistinguishable from a granted call taking the window's
+ *   very last slot, while `0` can never be a granted row because
+ *   limit >= 1 is enforced client-side (cubic PRRT_kwDOT_C_FM6bh9ms;
+ *   the adapter-side interpretation of the sentinel lives in
+ *   UpstashRestRateLimiter#toResult).
  * - Returns exactly one usage row per input window in input order:
- *   <used> for granted windows (1..limit), 0 for full windows.
+ *   committed usage (1..limit) for granted windows, 0 for full windows.
  *
- * KEYS/ARGV layout (the REST adapter passes numkeys=0, so every input
- * arrives as ARGV):
+ * KEYS/ARGV layout: the REST adapter passes numkeys=0 (Upstash REST
+ * clusters route EVALSHA by hashed script, and keeping keys in ARGV lets
+ * ONE script serve every key without cluster-slot restrictions), so every
+ * input arrives as ARGV and the script MUST NOT touch KEYS (cubic
+ * PRRT_kwDOT_C_FM6bh9m7):
  *   ARGV[1] = now, whole seconds
  *   then per window i (i = 0..N-1):
  *     ARGV[2 + i*3] = key, ARGV[3 + i*3] = limit,

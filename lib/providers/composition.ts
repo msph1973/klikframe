@@ -1,5 +1,8 @@
 import "server-only";
 import { getNeonAuthAdapter } from "@/lib/auth/neon-auth-adapter";
+import {
+  getFakeIdentitySessionPort,
+} from "@/lib/auth/fake-identity-session-port";
 import { setIdentitySessionPort } from "@/lib/auth/server";
 import { SystemClock } from "@/lib/shared/clock";
 import type { Clock } from "@/lib/shared/clock";
@@ -76,20 +79,28 @@ function buildProviders(): ProviderSet {
 }
 
 /**
- * Wires the Neon Auth adapter into the identity composition point from
- * `lib/auth/server.ts`. Idempotent; called by `createApp()` so the first
- * served request uses real session resolution.
+ * Wires the identity composition point from `lib/auth/server.ts` so the
+ * first served request resolves real sessions (cubic PRRT_kwDOT_C_FM6bh9m3).
+ * Idempotent and cheap on every cold-start path: under
+ * `NODE_ENV === "test"` it hands out the shared deterministic fake (the
+ * TESTING.md §2.2 IdentitySessionPort test adapter) instead of building a
+ * real Neon adapter, and everywhere else it reuses the process-wide cached
+ * adapter from `getNeonAuthAdapter()` — mirroring the getProviders()
+ * caching pattern.
  *
  * Environment-tolerant by design: when NEON_AUTH_BASE_URL is not
- * configured (unit tests, docs builds, offline tooling) the composition
- * keeps lib/auth/server.ts's unauthenticated default instead of throwing,
- * so building an app never requires provider credentials. Production
- * deploys set the canonical env, so real wiring happens there; a missing
- * variable in production surfaces as AUTH_REQUIRED per-request rather
- * than a boot-time crash — the same sanitized failure shape every other
- * adapter defers to request time.
+ * configured outside tests, the composition keeps lib/auth/server.ts's
+ * unauthenticated default instead of throwing, so building an app never
+ * requires provider credentials. Production deploys set the canonical env,
+ * so real wiring happens there; a missing variable in production surfaces
+ * as AUTH_REQUIRED per-request rather than a boot-time crash — the same
+ * sanitized failure shape every other adapter defers to request time.
  */
 export function wireIdentitySessionPort(): void {
+  if (getEnv().NODE_ENV === "test") {
+    setIdentitySessionPort(getFakeIdentitySessionPort());
+    return;
+  }
   try {
     setIdentitySessionPort(getNeonAuthAdapter());
   } catch (cause) {
