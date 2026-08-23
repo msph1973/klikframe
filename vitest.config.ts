@@ -24,7 +24,16 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "lcov"],
       include: ["lib/**/*.ts"],
-      exclude: ["lib/**/*.d.ts"],
+      exclude: [
+        "lib/**/*.d.ts",
+        // TESTING.md §2.2 provider-boundary rationale: frozen ports and
+        // barrels are pure-type re-export surface (no runtime branches);
+        // their adapters and fakes carry the tested logic.
+        "lib/realtime/realtime-port.ts",
+        "lib/providers/email/email-port.ts",
+        "lib/providers/storage/storage-types.ts",
+        "lib/providers/index.ts",
+      ],
       // TESTING.md §2.1: >=90% branch coverage for idempotency (and, in
       // later waves, authorization/payment/signature/lifecycle) modules;
       // >=80% for other non-UI code.
