@@ -118,6 +118,28 @@ describe("FakeRateLimiter — edge branches", () => {
     expect(result.resetAt.getTime()).toBe(BASE.getTime() + 60_000);
   });
 
+  it("binds failure resetAt to the latest rollover among exhausted windows", async () => {
+    // A long window drained to its last slot plus an already-full short
+    // window: a retry can only succeed when BOTH have rolled over, so
+    // resetAt must be the LATER rollover (120s), not the binding short
+    // window's (30s) (cubic FM6bh9m7).
+    const { limiter } = limiterAt();
+    const first = await limiter.limit([
+      { key: "long", limit: 1, windowMs: 120_000 },
+      { key: "short", limit: 1, windowMs: 30_000 },
+    ]);
+    expect(first.success).toBe(true);
+
+    const second = await limiter.limit([
+      { key: "long", limit: 1, windowMs: 120_000 },
+      { key: "short", limit: 1, windowMs: 30_000 },
+    ]);
+    expect(second.success).toBe(false);
+    if (second.success) throw new Error("expected failure");
+    expect(second.resetAt.getTime()).toBe(BASE.getTime() + 120_000);
+    expect(second.retryAfterMs).toBe(120_000);
+  });
+
   it("reports retryAfterMs 0 exactly at the window boundary", async () => {
     // Exactly one full window after BASE: the fresh window admits the hit.
     const atBoundary = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 60_000)));
