@@ -1,11 +1,16 @@
-import { index, jsonb, pgTable, timestamp, unique, uuid, varchar } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 
 import { workspaceStatusEnum } from "./enums";
 
 /**
  * `workspaces` (DATABASE_SCHEMA.md §2) — the tenant boundary. Every business
- * table carries `workspace_id`; the composite `(workspace_id, id)` key below
- * is what all cross-table composite foreign keys point at (§6 FK inventory).
+ * table carries `workspace_id`; child tables expose the canonical
+ * `(workspace_id, id)` unique set so future composite foreign keys can bind
+ * a relation to exactly one business account (§6 FK inventory). On
+ * `workspaces` itself no extra key is needed: the primary key already
+ * guarantees uniqueness on `id`, and Postgres FKs must match an existing
+ * unique constraint's exact column set, so an `UNIQUE(id)` restatement could
+ * never back a composite target anyway.
  */
 export const workspaces = pgTable(
   "workspaces",
@@ -20,14 +25,7 @@ export const workspaces = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
-  (table) => [
-    // §6: every tenant table carries UNIQUE (workspace_id, id) so child FKs
-    // can bind a relation to exactly one business account. On `workspaces`
-    // itself the tenant column IS the row, so this restates UNIQUE(id) under
-    // the canonical constraint name that child composite keys reference.
-    unique("workspaces_workspace_id_id_key").on(table.id),
-    index("workspaces_status_idx").on(table.status),
-  ],
+  (table) => [index("workspaces_status_idx").on(table.status)],
 );
 
 export type Workspace = typeof workspaces.$inferSelect;

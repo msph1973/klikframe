@@ -1,5 +1,5 @@
 {
-  "id": "d1df1f5f-09c7-4425-a4fb-3a61e95d0392",
+  "id": "2fbd177e-c81a-41ca-8522-069453c791b4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -109,7 +109,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "audit_events_workspace_id_id_key": {
+          "name": "audit_events_workspace_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -221,7 +230,7 @@
       "uniqueConstraints": {
         "idempotency_requests_scope_key": {
           "name": "idempotency_requests_scope_key",
-          "nullsNotDistinct": false,
+          "nullsNotDistinct": true,
           "columns": [
             "principal_id",
             "route",
@@ -239,7 +248,12 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "idempotency_requests_expiry_after_creation_check": {
+          "name": "idempotency_requests_expiry_after_creation_check",
+          "value": "\"idempotency_requests\".\"expires_at\" >= \"idempotency_requests\".\"created_at\" + interval '24 hours'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.profiles": {
@@ -283,23 +297,7 @@
           "notNull": true
         }
       },
-      "indexes": {
-        "profiles_auth_user_id_idx": {
-          "name": "profiles_auth_user_id_idx",
-          "columns": [
-            {
-              "expression": "auth_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
@@ -543,13 +541,6 @@
           "nullsNotDistinct": false,
           "columns": [
             "slug"
-          ]
-        },
-        "workspaces_workspace_id_id_key": {
-          "name": "workspaces_workspace_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id"
           ]
         }
       },

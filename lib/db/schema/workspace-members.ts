@@ -7,8 +7,12 @@ import { workspaces } from "./workspaces";
 /**
  * `workspace_members` (DATABASE_SCHEMA.md §2). The two partial unique
  * indexes below are THE onboarding concurrency boundary (§7): they make the
- * database — not an in-memory mutex — guarantee exactly one active owner
- * per workspace and at most one owned workspace per identity.
+ * database — not an in-memory mutex — guarantee AT MOST one active owner
+ * per workspace and at most one owned workspace per identity. Uniqueness
+ * bounds cardinality only; a workspace with no active owner row remains
+ * possible (existence is an application-level invariant), and the
+ * single-active-owner-per-workspace index is what makes concurrent
+ * onboarding races resolve to exactly one winner.
  */
 export const workspaceMembers = pgTable(
   "workspace_members",

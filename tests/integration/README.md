@@ -28,9 +28,11 @@ endpoint in `TEST_DATABASE_URL`. The intended harness:
 Until CI wires `TEST_DATABASE_URL`, every scenario below is registered as a
 skipped Vitest test with its full assertion body, so `npm run
 test:integration` stays green while remaining an executable specification.
-Enable them by replacing the module-level guard in
-`tests/integration/helpers/db.ts` (remove `describe.skip` wiring) once the
-harness exists — do NOT delete or rewrite the scenarios.
+Activation is purely environmental — no code change is required: provide
+`TEST_DATABASE_URL` (and apply the migrations with `DATABASE_MIGRATION_URL`
+pointing at the same disposable database) and `describeIntegration`
+(tests/integration/helpers/db.ts) switches itself from `describe.skip` to
+`describe`. Do NOT delete or rewrite the scenarios.
 
 ## Scenario list (encoded as skipped tests below)
 
@@ -40,8 +42,10 @@ harness exists — do NOT delete or rewrite the scenarios.
    indexes decide the winner; loser retries and observes the same rows).
 2. **Idempotency replay, same key + same body hash** — second request reads
    the stored response and replays it instead of re-running writes.
-3. **Idempotency replay, same key + different body** → the store reports a
-   conflict which the route layer maps to `409 IDEMPOTENCY_CONFLICT`.
+3. **Idempotency replay, same key + different body** — a second write in
+   the same scope with a different body hash is rejected by the scope
+   unique (`23505`), which the route layer maps to `409
+   IDEMPOTENCY_CONFLICT`.
 4. **Different identity, same slug** — slug unique constraint rejects the
    second workspace creation; assert zero orphan profile/membership rows for
    the failed attempt.

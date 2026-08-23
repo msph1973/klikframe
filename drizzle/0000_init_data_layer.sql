@@ -12,7 +12,8 @@ CREATE TABLE "audit_events" (
 	"resource_id" uuid NOT NULL,
 	"request_id" varchar(100) NOT NULL,
 	"metadata" jsonb,
-	"created_at" timestamp with time zone NOT NULL
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "audit_events_workspace_id_id_key" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "idempotency_requests" (
@@ -27,8 +28,9 @@ CREATE TABLE "idempotency_requests" (
 	"response_body" jsonb NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "idempotency_requests_scope_key" UNIQUE("principal_id","route","resource_id","key"),
-	CONSTRAINT "idempotency_requests_workspace_id_id_key" UNIQUE("workspace_id","id")
+	CONSTRAINT "idempotency_requests_scope_key" UNIQUE NULLS NOT DISTINCT("principal_id","route","resource_id","key"),
+	CONSTRAINT "idempotency_requests_workspace_id_id_key" UNIQUE("workspace_id","id"),
+	CONSTRAINT "idempotency_requests_expiry_after_creation_check" CHECK ("idempotency_requests"."expires_at" >= "idempotency_requests"."created_at" + interval '24 hours')
 );
 --> statement-breakpoint
 CREATE TABLE "profiles" (
@@ -63,8 +65,7 @@ CREATE TABLE "workspaces" (
 	"deleted_at" timestamp with time zone,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "workspaces_slug_unique" UNIQUE("slug"),
-	CONSTRAINT "workspaces_workspace_id_id_key" UNIQUE("id")
+	CONSTRAINT "workspaces_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
 ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -72,8 +73,14 @@ ALTER TABLE "idempotency_requests" ADD CONSTRAINT "idempotency_requests_workspac
 ALTER TABLE "workspace_members" ADD CONSTRAINT "workspace_members_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "audit_events_workspace_id_created_at_idx" ON "audit_events" USING btree ("workspace_id","created_at");--> statement-breakpoint
 CREATE INDEX "idempotency_requests_expires_at_idx" ON "idempotency_requests" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "profiles_auth_user_id_idx" ON "profiles" USING btree ("auth_user_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "workspace_members_single_active_owner_per_workspace_key" ON "workspace_members" USING btree ("workspace_id") WHERE role = 'owner' AND status = 'active';--> statement-breakpoint
 CREATE UNIQUE INDEX "workspace_members_single_owned_workspace_per_identity_key" ON "workspace_members" USING btree ("auth_user_id") WHERE role = 'owner' AND status = 'active';--> statement-breakpoint
 CREATE INDEX "workspace_members_auth_user_id_status_idx" ON "workspace_members" USING btree ("auth_user_id","status");--> statement-breakpoint
-CREATE INDEX "workspaces_status_idx" ON "workspaces" USING btree ("status");
+CREATE INDEX "workspaces_status_idx" ON "workspaces" USING btree ("status");--> statement-breakpoint
+CREATE FUNCTION "audit_events_block_mutation"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	RAISE EXCEPTION 'audit_events is append-only: % on audit_events rows is not permitted', TG_OP;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "audit_events_append_only" BEFORE UPDATE OR DELETE ON "audit_events"
+	FOR EACH ROW EXECUTE FUNCTION "audit_events_block_mutation"();

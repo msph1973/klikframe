@@ -3,6 +3,8 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { describe } from "vitest";
 import { Pool } from "pg";
 
+import * as schema from "../../../lib/db/schema";
+
 /**
  * Integration harness bootstrap (tests/integration/README.md). Activates
  * only when CI provides `TEST_DATABASE_URL`; otherwise every suite using
@@ -20,7 +22,7 @@ export function describeIntegration(name: string, fn: () => void): void {
 
 /** Concrete harness contract owned here so scenarios import the name. */
 export interface HarnessDb {
-  readonly db: NodePgDatabase;
+  readonly db: NodePgDatabase<typeof schema>;
   readonly pool: Pool;
 }
 
@@ -29,7 +31,10 @@ export function createHarnessDb(): HarnessDb {
     throw new Error("createHarnessDb requires TEST_DATABASE_URL (CI harness only)");
   }
   const pool = new Pool({ connectionString: TEST_DATABASE_URL });
-  return { db: drizzle(pool), pool };
+  // Schema-bound so `db.transaction()` yields a PgTransaction typed over the
+  // full schema — structurally assignable to the app's DbTx (neon-serverless
+  // transaction) for repository call sites.
+  return { db: drizzle(pool, { schema }), pool };
 }
 
 export async function closeHarnessDb(harness: HarnessDb): Promise<void> {
@@ -45,7 +50,7 @@ export interface TableCounts {
 }
 
 /** Row counts used by rollback/concurrency assertions across all tables. */
-export async function readTableCounts(db: NodePgDatabase): Promise<TableCounts> {
+export async function readTableCounts(db: NodePgDatabase<typeof schema>): Promise<TableCounts> {
   const result = await db.execute<{
     profiles: number;
     workspaces: number;
