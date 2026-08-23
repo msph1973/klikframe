@@ -2,7 +2,7 @@
 
 **Proyek:** KlikFrame (`msph1973/klikframe`)
 **Paket:** Wave 0 — Foundation scaffold, shared contracts, quality gates
-**Tanggal:** 2026-08-22
+**Tanggal:** 2026-08-23 (revisi 2)
 **Agen pelaksana:** External foundation implementer (ox-alpha)
 
 ---
@@ -20,10 +20,10 @@ PR terbuka, seluruh CI checks hijau pada HEAD terbaru, seluruh temuan BOT tersel
 | Baseline commit (`main`) | `d9597f6821f42410eadc8a1137e4f9e1822d987b` |
 | Foundation branch | `foundation/phase-0-scaffold` |
 | Worktree path | `/root/klik-foundation` |
-| Foundation commit (HEAD) | `ad906b0a9a4d2e2d8e284a8e66e45d5a74923a72` |
+| Foundation commit (HEAD) | `ba60a0f42abd9bf5df3036ddd81770af36994581` |
 | PR | [msph1973/klikframe#1](https://github.com/msph1973/klikframe/pull/1) |
 | State PR | `OPEN`, `MERGEABLE`, mergeState `CLEAN`, `mergedAt: null` |
-| Total perubahan | 63 file, +11.021 / −1 baris |
+| Total perubahan | 67 file, ±11.4k baris |
 
 Rantai commit foundation (terlama → terbaru):
 
@@ -35,6 +35,9 @@ daf8b02 fix(idempotency): deterministic key sort and undefined-safe canonical ha
 4ce0d15 fix(ci): gitignore generated SBOM and run secret scan before it exists
 349f1bf fix: address round-2 cubic-dev-ai findings (edge cases in round-1 fixes)
 ad906b0 fix: address round-3 cubic-dev-ai findings (Set-Cookie loss and markdown edge cases)
+b34e9db docs: add Phase 0 Wave 0 foundation implementation report
+09a3e5d feat(docs-check): implement full TESTING.md section 8 static validation
+ba60a0f fix(docs-check): remove EVENT_NAME_PATTERN superseded by embedded variant
 ```
 
 ## Git Bootstrap
@@ -164,7 +167,7 @@ Exit code `gh pr checks`: **0** (semua hijau).
 | Bot | Status akhir |
 |---|---|
 | **gitar-bot** | ✅ APPROVED — auto-approve ("No blocking issues found"), findings awal (locale-dependent sort, undefined hashing) resolved |
-| **cubic-dev-ai** | ✅ Konvergen setelah 4 putaran review. Pass terakhir (HEAD `ad906b0`): **"0 issues found across 4 files"** |
+| **cubic-dev-ai** | ✅ Konvergen setelah 5 putaran review. Pass terakhir (HEAD `ba60a0f`): **"0 issues found across 1 file"** |
 | CodeRabbit | Pass — skip by configuration (repo OSS <10 stars); opsi trigger manual tersedia di PR |
 
 ---
@@ -237,6 +240,6 @@ Exit code `gh pr checks`: **0** (semua hijau).
 
 ## Langkah Berikutnya (untuk Anda)
 
-1. Review PR [#1](https://github.com/msph1973/klikframe/pull/1) — diff 63 file, deskripsi lengkap di body PR.
+1. Review PR [#1](https://github.com/msph1973/klikframe/pull/1) — diff 67 file, deskripsi lengkap di body PR.
 2. Jika setuju: berikan instruksi eksplisit "merge PR #1" (agen tidak akan merge tanpa instruksi tersebut).
-3. Setelah merge: Wave 1A (data: schema/migration/repository) dan Wave 1B (provider: ports/adapters/Ably) siap dikerjakan paralel dari SHA gate ini (`ad906b0`) sesuai plan.
+3. Setelah merge: Wave 1A (data: schema/migration/repository) dan Wave 1B (provider: ports/adapters/Ably) siap dikerjakan paralel dari merge-commit hasil PR #1 (bukan SHA cabang foundation) sesuai plan.
