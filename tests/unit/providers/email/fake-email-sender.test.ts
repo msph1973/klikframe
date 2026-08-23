@@ -49,6 +49,9 @@ describe("FakeEmailSender — capture", () => {
       subject: "Portal access",
       text: "Open https://klikframe.test/portal?t=abc123 to continue.",
       html: "<a href=\"https://klikframe.test/portal?t=abc123\">Continue</a>",
+      attachments: [
+        { filename: "qr.png", contentBase64: "cG9ydGFs", contentType: "image/png" },
+      ],
     });
     await fake.send(portalRequest);
     // The capture must retain the BODY, not just delivery metadata —
@@ -58,6 +61,10 @@ describe("FakeEmailSender — capture", () => {
     );
     expect(fake.findRequestByDedupeKey(portalRequest.dedupeKey)?.html).toContain("abc123");
     expect(fake.findByDedupeKey(portalRequest.dedupeKey)?.kind).toBe("portal_link");
+    // Attachments survive the capture verbatim (contract/invoice sends).
+    expect(fake.findRequestByDedupeKey(portalRequest.dedupeKey)?.attachments).toEqual(
+      portalRequest.attachments,
+    );
   });
 
 
