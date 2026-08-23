@@ -449,6 +449,14 @@
             "workspace_id",
             "auth_user_id"
           ]
+        },
+        "workspace_members_workspace_id_id_key": {
+          "name": "workspace_members_workspace_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "id"
+          ]
         }
       },
       "policies": {},

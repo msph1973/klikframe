@@ -33,6 +33,8 @@ export const workspaceMembers = pgTable(
       table.workspaceId,
       table.authUserId,
     ),
+    // §6 canonical composite tenant key for future composite child FKs.
+    unique("workspace_members_workspace_id_id_key").on(table.workspaceId, table.id),
     // One active owner per workspace.
     uniqueIndex("workspace_members_single_active_owner_per_workspace_key")
       .on(table.workspaceId)

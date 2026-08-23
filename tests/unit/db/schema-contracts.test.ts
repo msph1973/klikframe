@@ -160,6 +160,24 @@ describe("onboarding concurrency boundary (partial unique indexes)", () => {
     );
   });
 
+  it("exposes the canonical UNIQUE (workspace_id, id) on every tenant-scoped table", () => {
+    // DATABASE_SCHEMA.md §6: each tenant table's `(workspace_id, id)` key is
+    // the target set future composite child FKs reference. Postgres FKs must
+    // match an existing unique constraint's exact column list — a missing
+    // key makes the table unusable as a composite-tenant parent.
+    for (const table of [auditEvents, idempotencyRequests, workspaceMembers]) {
+      const constraint = getTableConfig(table).uniqueConstraints.find(
+        (candidate) =>
+          candidate.name === `${getTableName(table as Parameters<typeof getTableName>[0])}_workspace_id_id_key`,
+      );
+      expect(constraint, `${getTableName(table as Parameters<typeof getTableName>[0])} must carry <table>_workspace_id_id_key`).toBeDefined();
+      expect(constraint?.columns.map((column) => column.name)).toEqual([
+        "workspace_id",
+        "id",
+      ]);
+    }
+  });
+
   it("anchors every tenant-tagged child to workspaces.id (composite FK)", () => {
     for (const table of [auditEvents, idempotencyRequests, workspaceMembers]) {
       const config = getTableConfig(table);
@@ -195,6 +213,20 @@ describe("audit_events append-only enforcement lives in the migration", () => {
   it("backs the trigger with a raising block-mutation function", () => {
     expect(migrationSql).toMatch(/CREATE FUNCTION "audit_events_block_mutation"/);
     expect(migrationSql).toContain("RAISE EXCEPTION");
+  });
+
+  it("blocks TRUNCATE through a separate statement-level trigger (PRRT_kwDOT_C_FM6bipfF follow-up)", () => {
+    // A row-level BEFORE UPDATE OR DELETE trigger never fires for TRUNCATE,
+    // so without this trigger a plain `TRUNCATE audit_events` would wipe
+    // history and bypass the append-only boundary.
+    expect(migrationSql).toMatch(
+      /CREATE TRIGGER "audit_events_append_only_truncate" BEFORE TRUNCATE ON "audit_events"\s*FOR EACH STATEMENT EXECUTE FUNCTION "audit_events_block_mutation"\(\);/,
+    );
+    // The row trigger must NOT claim TRUNCATE: Postgres rejects
+    // `BEFORE ... OR TRUNCATE ... FOR EACH ROW` at CREATE TRIGGER time.
+    expect(migrationSql).not.toMatch(
+      /CREATE TRIGGER "audit_events_append_only"[^;]*TRUNCATE[^;]*FOR EACH ROW/,
+    );
   });
 });
 

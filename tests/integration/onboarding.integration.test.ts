@@ -161,7 +161,8 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
 
   it("scenario 4: a different identity taking the same slug leaves no orphan rows from the failed attempt", async () => {
     const slug = `slug-shared-${String(Date.now())}`;
-    await runOnboardingTransaction(await tx(), onboardInput("it-slug-a", slug));
+    const incumbent = `it-slug-a-${String(Date.now())}`;
+    await runOnboardingTransaction(await tx(), onboardInput(incumbent, slug));
     // The conflicting identity's unit runs inside one transaction; the
     // WorkspaceSlugConflictError (mapped to 409 SLUG_CONFLICT) aborts it,
     // so the profile upsert performed before the conflict must roll back.
@@ -179,12 +180,18 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     // The failed transaction rolled back completely.
     expect(orphanProfiles.rows[0]?.n).toBe(0);
     expect(orphanMembers.rows[0]?.n).toBe(0);
+  });
+
+  it("scenario 5: fault injection after each onboarding step leaves no partial writes", async () => {
     const before = await readTableCounts(requireHarness().db);
     const failAfter = ["profile", "workspace", "membership", "audit", "idempotency"] as const;
     for (const step of failAfter) {
       // Inject the failure inside ONE genuine serializable transaction
       // (DrizzleTransactionRunner): every write runOnboardingTransaction
-      // performed before the injected throw must roll back together.
+      // performed before the injected throw must roll back together. A
+      // failure in one step must not mask the assertions of the next, so
+      // each step runs and is asserted independently (PRRT_…FM6bh72K
+      // follow-up: this loop used to share scenario 4's it() body).
       const runner = new DrizzleTransactionRunner(requireHarness().db);
       await expect(
         runner.run(async (dbTx) => {
@@ -211,9 +218,49 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     expect(after).toEqual(before);
   });
 
+  it("scenario 5b: TRUNCATE cannot bypass the audit append-only trigger", async () => {
+    // Row-level BEFORE UPDATE OR DELETE triggers never fire for TRUNCATE,
+    // so without the migration's separate statement-level trigger a plain
+    // `TRUNCATE audit_events` would wipe history and silently bypass the
+    // append-only boundary. This probe must fail with the trigger's
+    // append-only error, not succeed.
+    const workspaces = await requireHarness().db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM workspaces`,
+    );
+    if ((workspaces.rows[0]?.n ?? 0) === 0) {
+      await runOnboardingTransaction(await tx(), onboardInput("it-trunc-a", `slug-it-trunc-${String(Date.now())}`));
+    }
+    const events = await requireHarness().db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM audit_events`,
+    );
+    if ((events.rows[0]?.n ?? 0) === 0) {
+      await runOnboardingTransaction(await tx(), onboardInput("it-trunc-b", `slug-it-trunc-b-${String(Date.now())}`));
+    }
+    const probe = await requireHarness().db.execute(
+      sql`TRUNCATE TABLE audit_events`,
+    ).then(() => undefined).catch((e: unknown) => e);
+    expect(probe).toBeInstanceOf(Error);
+    // The trigger's RAISE EXCEPTION surfaces as SQLSTATE P0001 with the
+    // append-only message — not a silent success. Drizzle wraps driver
+    // errors, so walk the cause chain for the message.
+    expect(pgCode(probe)).toBe("P0001");
+    let cursor: unknown = probe;
+    let message = "";
+    while (cursor instanceof Error) {
+      message += ` ${cursor.message}`;
+      cursor = (cursor as { cause?: unknown }).cause;
+    }
+    expect(message).toMatch(/append-only/i);
+  });
+
   it("scenario 6: cross-workspace composite reference is rejected by the database (23503)", async () => {
-    await runOnboardingTransaction(await tx(), onboardInput("it-cross-a", `slug-xa-${String(Date.now())}`));
-    await runOnboardingTransaction(await tx(), onboardInput("it-cross-b", `slug-xb-${String(Date.now())}`));
+    // Idempotent across re-runs on a shared database: an identity that has
+    // already onboarded keeps its workspace (the retry path returns the
+    // existing owner row), so seeding twice never duplicates state.
+    const slugA = `slug-xa-${String(Date.now())}`;
+    const slugB = `slug-xb-${String(Date.now())}`;
+    await runOnboardingTransaction(await tx(), onboardInput("it-cross-a", slugA)).catch((e: unknown) => e);
+    await runOnboardingTransaction(await tx(), onboardInput("it-cross-b", slugB)).catch((e: unknown) => e);
     // FK probe: audit_events referencing a nonexistent workspace must raise
     // SQLSTATE 23503 at the database level.
     const probe = await requireHarness().db
