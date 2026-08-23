@@ -118,6 +118,30 @@ describe("FakeObjectStorage — malformed URL handling", () => {
     });
   });
 
+  it("surfaces an unparseable upload URL as sanitized malformed_response", async () => {
+    const store = storage();
+    // Same taxonomy on the PUT path: expiry parsing must not explode with
+    // a raw TypeError before the provider error mapping runs.
+    await expect(
+      store.consumePresignedUpload({
+        outcome: {
+          url: "::not a url::",
+          expiresAt: new Date(BASE.getTime() + 60_000),
+          requiredHeaders: { "content-type": "image/png", "x-amz-checksum-sha256": CHECKSUM },
+        },
+        key: "ws_1/signature/s1.png",
+        sizeBytes: 512,
+        contentType: "image/png",
+        checksumSha256: CHECKSUM,
+      }),
+    ).rejects.toMatchObject({
+      kind: "malformed_response",
+      provider: "storage",
+      operation: "presignUpload",
+    });
+    expect(store.objectCount).toBe(0);
+  });
+
   it("keeps a parseable but unknown-object download URL a permanent error", async () => {
     const store = storage();
     await expect(
