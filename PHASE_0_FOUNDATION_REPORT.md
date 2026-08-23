@@ -7,9 +7,9 @@
 
 ---
 
-## Status: READY
+## Status: READY (revisi 2 — TESTING.md §8 lengkap)
 
-PR terbuka, seluruh CI checks hijau, BOT review selesai dan konvergen (0 isu terbuka pada pass terakhir cubic). **PR sengaja tidak di-merge** — menunggu persetujuan eksplisit dari pengguna sesuai kontrak delegasi.
+PR terbuka, seluruh CI checks hijau pada HEAD terbaru, seluruh temuan BOT terselesaikan (thread PRRT_kwDOT_C_FM6bX9Ko kini diimplementasikan penuh dan resolved — tidak ada thread terbuka). **PR sengaja tidak di-merge** — menunggu persetujuan eksplisit dari pengguna sesuai kontrak delegasi.
 
 ---
 
@@ -65,13 +65,13 @@ ad906b0 fix: address round-3 cubic-dev-ai findings (Set-Cookie loss and markdown
 `lib/auth/identity-session-port.ts`, `lib/auth/server.ts`, `lib/db/transaction-port.ts`, `lib/idempotency/idempotency-port.ts`, `lib/realtime/realtime-port.ts`, `lib/shared/clock.ts`, `lib/shared/id.ts`, `lib/shared/provider-error.ts`
 
 ### Quality Gates
-`scripts/docs-check.mjs`, `scripts/docs/markdown.mjs`, `scripts/docs/rules.mjs` (+ deklarasi `.d.mts`), `scripts/check-file-size.mjs` (+`.d.mts`), `scripts/secret-scan.mjs` (+`.d.mts`), `scripts/e2e-placeholder.mjs`, `config/file-size-allowlist.json`
+`scripts/docs-check.mjs`, `scripts/docs/markdown.mjs`, `scripts/docs/rules.mjs`, `scripts/docs/section8-rules.mjs`, `scripts/docs/canonical-vocabulary.mjs` (+ deklarasi `.d.mts`), `scripts/check-file-size.mjs` (+`.d.mts`), `scripts/secret-scan.mjs` (+`.d.mts`), `scripts/e2e-placeholder.mjs`, `config/file-size-allowlist.json`
 
 ### CI
 `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `.github/dependabot.yml`
 
 ### Tests & Fixtures
-16 file test di `tests/unit/**` (125 test), negative fixtures di `tests/fixtures/negative/**` (implicit-any, explicit-any + tsconfig isolat), `tests/setup/server-only-mock.ts`, `tests/integration/README.md`
+17 file test di `tests/unit/**` (144 test, termasuk 19 test §8), negative fixtures di `tests/fixtures/negative/**` (implicit-any, explicit-any + tsconfig isolat), `tests/setup/server-only-mock.ts`, `tests/integration/README.md`
 
 ---
 
@@ -96,7 +96,7 @@ ad906b0 fix: address round-3 cubic-dev-ai findings (Set-Cookie loss and markdown
 1. **ESLint pin `9.39.5`**, bukan latest `10.9.0` — `eslint-config-next@16.3.1` membawa `eslint-plugin-react` yang memanggil `context.getFilename()` yang telah dihapus di ESLint 10 (crash saat load config; lihat vercel/next.js#89764). Direvisit ulang ketika eslint-config-next merilis plugin yang kompatibel.
 2. **Env provider-specific tetap `.optional()`** di Phase 0 karena belum ada adapter yang mengonsumsi nilainya dan CI/local tanpa secret provisioned; tiap provider wave mengetatkan field miliknya saat adapter di-wire. Yang sudah diterapkan sejak foundation: `UPSTASH_REDIS_REST_URL` wajib https, secret min. 32 byte, blank `.env.example`-style dianggap unset, `NODE_ENV` kosong ditolak (tidak diam-diam fallback ke default).
 3. **`test:integration` / `test:e2e` no-op tapi terpasang** di urutan CI TESTING.md §6 (`--passWithNoTests` / placeholder) — harness nyata milik Step 2 (data), Step 4 (integrasi), Step 5 (verifier). Pemisahan unit vs integration dipaksakan lewat argumen path di masing-masing npm script, bukan hanya `include` config.
-4. **`docs:check` implementasi parsial TESTING.md §8**: links/anchors, duplikat/referensi requirement-ID (definisi kanonis = heading KF-* + baris tabel NFR-* di section Non-Functional Requirements saja), parse JSON/Mermaid (termasuk fence `~~~` dan panjang variabel), table shape (code-span & escaped-pipe aware), unterminated fence, forbidden env vocabulary (negasi di-scope per kalimat). Sisa cakupan §8 (konsistensi vocabulary route/status/role lintas dokumen, traceability end-to-end) didefer — satu thread review sengaja dibiarkan terbuka agar tetap visible.
+4. **`docs:check` mengimplementasikan seluruh TESTING.md §8**: links/anchors, duplikat/referensi requirement-ID (definisi kanonis = heading KF-* + baris tabel NFR-* di section Non-Functional Requirements saja), parse JSON/Mermaid, table shape, unterminated fence, forbidden env vocabulary (negasi per kalimat), route vocabulary lintas dokumen (referensi route di luar API_SPEC harus terdeklarasi; prefix `/api/v1` distrip dari path; proxy auth dikecualikan), status vocabulary (token status dekat kata "status" harus anggota enum DATABASE_SCHEMA), role vocabulary (role non-owner hanya boleh dalam konteks Post-MVP/out-of-scope), traceability completeness (kedua matriks wajib setara ID + fase; tiap fase yang direferensikan wajib punya heading Fase di ROADMAP), dan Ably scope consistency (action scope allowlist API_SPEC §7, bentuk channel kanonis, pairing event→resource §9.6, aturan server-only key/publish-capability).
 5. **Secret scan diposisikan setelah e2e** agar urutan persis TESTING.md §6, tetapi sebelum SBOM generation sehingga artifact generated (`sbom.cyclonedx.json`, untracked+gitignored) tidak memicu fail-closed oversize-check.
 6. **SBOM native**: `npm sbom --sbom-format=cyclonedx` (didukung npm 11.19.0) — tanpa dependency tambahan.
 7. **Auth proxy shell** (`app/api/auth/[...path]/route.ts` + `proxy.ts`) mendelegasikan via composition point yang dapat ditukar (`setAuthRequestHandler` / `setAuthProxyHandler` di `lib/auth/server.ts`) sehingga provider wave (Step 3) tidak pernah menyentuh composition root Next.js. Route juga memaksa konsistensi `X-Request-Id`: ID terkomputasi dipaksakan ke request yang didelegasikan dan response header selalu dioverwrite, dengan preservasi penuh multi `Set-Cookie`.
@@ -110,11 +110,11 @@ Semua command dieksekusi lokal di `/root/klik-foundation` mengikuti urutan TESTI
 | # | Command | Exit | Hasil ringkas |
 |---|---|---|---|
 | 1 | `npm ci` | 0 | 406 packages, immutable install dari lockfile |
-| 2 | `npm run docs:check` | 0 | 17 Markdown divalidasi, 0 temuan |
-| 3 | `npm run check:file-size` | 0 | 50 file source/test discan, 0 melewati target review 400 |
+| 2 | `npm run docs:check` | 0 | 18 Markdown divalidasi (termasuk §8 vocabulary/traceability/Ably), 0 temuan |
+| 3 | `npm run check:file-size` | 0 | 52 file source/test discan, 0 melewati target review 400 |
 | 4 | `npm run lint` | 0 | `eslint .` type-aware (strictTypeChecked + stylisticTypeChecked), 0 error |
 | 5 | `npm run typecheck` | 0 | `tsc --noEmit` strict bersih |
-| 6 | `npm run test:unit -- --coverage` | 0 | **125 tests lulus**; coverage ±96% statements/branches/lines; thresholds ≥80% global, ≥90% `lib/idempotency/**` aktif dan terpenuhi (91.66%) |
+| 6 | `npm run test:unit -- --coverage` | 0 | **144 tests lulus**; coverage ≥95%; thresholds ≥80% global, ≥90% `lib/idempotency/**` aktif dan terpenuhi |
 | 7 | `npm run test:integration` | 0 | passWithNoTests (kosong by design, milik Step 2) |
 | 8 | `npm run build` | 0 | Build produksi Next.js 16.3.1 sukses (Turbopack) |
 | 9 | `npm run test:e2e` | 0 | Placeholder terdokumentasi (milik Step 5) |
@@ -137,12 +137,12 @@ Invokasi binary melalui `process.execPath <pkg>/bin/<entry>.js` (cross-platform,
 
 `next build && next start`, diverifikasi via curl:
 - `GET /api/v1/health` → 200 `{"status":"ok","version":...}` + header `X-Request-Id`
-- `GET /api/v1/does-not-exist` → 404 envelope `RESOURCE_NOT_FOUND` dengan `request_id` yang sama dengan header
+- Rute tidak dikenal di luar daftar kanonis API_SPEC (uji: path acak yang tidak dideklarasikan) → 404 envelope `RESOURCE_NOT_FOUND` dengan `request_id` yang sama dengan header
 - `GET /api/auth/get-session` → 503 envelope `DEPENDENCY_UNAVAILABLE` (perilaku shell yang benar sebelum adapter provider di-wire)
 
 ---
 
-## gh pr checks status (final, HEAD `ad906b0`)
+## gh pr checks status
 
 ```
 Analyze (javascript-typescript)   pass    56s    GitHub Actions
@@ -205,11 +205,11 @@ Exit code `gh pr checks`: **0** (semua hijau).
 | R3-2 | `scripts/docs/markdown.mjs:13` (P2) | `~~~ json` (whitespace sebelum language) tidak pernah open → closer jadi phantom unterminated | ✅ `FENCE_OPEN` allow `\s*` antara marker dan info-string; regression test utk ``` json dan ~~~ json |
 | R3-3 | `scripts/docs/markdown.mjs:151` (P2) | Baris malformed outer-pipe-only (`| only |`) ter-drop diam-diam alih-alih dilaporkan mismatch kolom | ✅ Helper bersama baru `isTableRowCandidate`: pertahankan outer-pipe-only row agar surface sebagai finding; prose ber-pipe code-span tetap terminate table; regression test kedua arah |
 
-### Thread yang sengaja dibiarkan TERBUKA (1)
+### Thread PRRT_kwDOT_C_FM6bX9Ko — TESTING.md §8 (sebelumnya didefer, KINI IMPLEMENTED)
 
-| Thread | Alasan defer |
+| Thread | Status akhir |
 |---|---|
-| [`scripts/docs-check.mjs` — TESTING.md §8 partial automation](https://github.com/msph1973/klikframe/pull/1#discussion_r3835996892) | TESTING.md §8 sendiri mengantisipasi automasi bertahap ("Sampai script tersedia, review checklist yang sama wajib dijalankan manual"). Yang sudah otomatis: links/anchors, duplikat/referensi requirement-ID, JSON/Mermaid parse, table shape, unterminated fence, env vocabulary. Yang belum (route/status/role vocabulary lintas dokumen, traceability end-to-end penuh) didefer ke wave berikutnya; gap didokumentasikan di header comment script. Dibalas dengan rationale teknis di thread. |
+| [`scripts/docs-check.mjs` — TESTING.md §8 full automation](https://github.com/msph1973/klikframe/pull/1#discussion_r3835996892) | ✅ **Resolved setelah implementasi penuh** (revisi 2). Temuan awal: docs:check belum menguji route/status/role vocabulary, traceability completeness, dan Ably scope consistency. Semua kini otomatis di `scripts/docs/section8-rules.mjs` + vocabulary kanonis di `scripts/docs/canonical-vocabulary.mjs`, dengan 19 test positif/negatif di `tests/unit/scripts/section8-rules.test.ts`. Deferral sebelumnya dicabut; tidak ada thread terbuka tersisa. |
 
 ---
 
@@ -231,8 +231,8 @@ Exit code `gh pr checks`: **0** (semua hijau).
 
 1. **ESLint tertahan di v9** sampai `eslint-config-next` merilis `eslint-plugin-react` yang kompatibel ESLint 10 — upgrade path perlu dipantau di wave berikutnya (low risk, fungsional penuh di v9).
 2. **BOT review adalah AI reviewer** (gitar/cubic/CodeRabbit) — approval mereka bukan substitusi human review. Persetujuan merge tetap di tangan Anda.
-3. **`docs:check` mencakup sebagian TESTING.md §8** — checklist manual sisanya wajib dijalankan pada gate fase berikutnya (sudah didokumentasikan di script).
-4. **Integration/E2E belum ada harness nyata** — sesuai desain gelombang (Step 2/4/5); CI step sudah terpasang di posisi kanan sehingga harness tinggal di-drop-in.
+3. **Integration/E2E belum ada harness nyata** — sesuai desain gelombang (Step 2/4/5); CI step sudah terpasang di posisi kanan sehingga harness tinggal di-drop-in.
+4. **Status-vocabulary check berbasis stoplist** — pendekatan "token backtick dekat kata status" sengaja menerima false-negative kecil (status salah yang tidak ditulis di baris ber-kata "status"); false positive dicegah lewat stoplist identifier. Trade-off didokumentasikan di source.
 5. **GitHub secret scanning / push protection** direkomendasikan diaktifkan di level repo (Settings → Code security) sebagai pelengkap scanner lokal — di luar wewenang agen (butuh akses settings admin).
 
 ## Langkah Berikutnya (untuk Anda)
