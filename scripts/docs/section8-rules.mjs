@@ -30,7 +30,6 @@ const ROUTE_PATTERN = /`((?:GET|POST|PATCH|PUT|DELETE) \/[a-zA-Z0-9_\-/:{}[\].]+
 const STATUS_TOKEN_PATTERN = /`([a-z][a-z_]+)`/g;
 const ACTION_SCOPE_PATTERN = /`((?:contract|invoice|album):[a-z_:]+)`/g;
 const CHANNEL_TOKEN_PATTERN = /`((?:workspace|portal):[^`\s]+)`/g;
-const EVENT_NAME_PATTERN = /`((?:contract|invoice|payment|gallery|selection)\.[a-z]+)`/g;
 // Same event vocabulary, but also matches when the name is embedded in a
 // quoted JSON fragment inside backticks ("event_type": "contract.signed").
 const EMBEDDED_EVENT_NAME_PATTERN =
