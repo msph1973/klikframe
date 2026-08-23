@@ -113,11 +113,19 @@ export class FakeRateLimiter implements RateLimiter {
         "Rate limit window requires a positive integer limit",
       );
     }
-    if (!Number.isInteger(window.windowMs) || window.windowMs < 1) {
+    // Whole seconds only, exactly like the Upstash REST adapter: the Lua
+    // script indexes buckets in whole seconds, so a sub-second windowMs
+    // would make the fake and the real limiter disagree on both the
+    // enforced limit and resetAt (cubic FM6bh9nJ).
+    if (
+      !Number.isInteger(window.windowMs) ||
+      window.windowMs < 1000 ||
+      window.windowMs % 1000 !== 0
+    ) {
       throw new ProviderError(
         "permanent",
         { provider: "upstash", operation: "limit" },
-        "Rate limit window requires a positive integer windowMs",
+        "Rate limit window requires a whole number of seconds (windowMs must be a positive multiple of 1000)",
       );
     }
     if (window.key.length === 0) {

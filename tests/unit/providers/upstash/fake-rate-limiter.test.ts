@@ -98,10 +98,19 @@ describe("FakeRateLimiter — atomic multi-key contract", () => {
 });
 
 describe("FakeRateLimiter — edge branches", () => {
-  it("rejects non-integer or sub-second windows as permanent provider errors", async () => {
+  it("rejects non-whole-second windows like the real adapter, accepts whole-second ones", async () => {
     const { limiter } = limiterAt();
+    // Sub-second precision is rejected so both implementations enforce
+    // identical limits and reset times (cubic FM6bh9nJ).
     await expect(
-      limiter.limit([{ key: "k", limit: 5, windowMs: 1_500_000 }]),
+      limiter.limit([{ key: "k", limit: 5, windowMs: 1_500 }]),
+    ).rejects.toMatchObject({ kind: "permanent", provider: "upstash" });
+    await expect(
+      limiter.limit([{ key: "k", limit: 5, windowMs: 1500_500 }]),
+    ).rejects.toMatchObject({ kind: "permanent", provider: "upstash" });
+    // A whole-second multi-second window is accepted.
+    await expect(
+      limiter.limit([{ key: "k2", limit: 5, windowMs: 1_500_000 }]),
     ).resolves.toMatchObject({ success: true });
   });
 
