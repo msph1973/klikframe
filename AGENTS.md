@@ -38,7 +38,7 @@ Memory hanya menyimpan snapshot dan indeks. Jika detail berbeda, dokumen domain 
 
 ## Invariant Arsitektur dan Produk
 
-- Stack MVP: Next.js dan Hono di Vercel, Neon PostgreSQL dengan Managed Better Auth, Upstash, AWS S3/CloudFront, Resend, dan Ably untuk event bisnis realtime.
+- Stack MVP: Next.js dan Hono di Vercel, Neon PostgreSQL dengan Managed Better Auth, Upstash, Civo S3 Object Storage (S3-compatible), Resend, dan Ably untuk event bisnis realtime.
 - Neon Auth hanya mengelola identity dan session. Data aplikasi tidak menyimpan ulang password atau credential auth.
 - Setiap pendaftar mendapat tepat satu akun bisnis secara otomatis. Implementasi membuat `workspaces` dan membership pemilik secara atomik serta idempotent.
 - Semua data bisnis diisolasi dengan `workspace_id`; MVP hanya memberi akses dashboard kepada pemilik.

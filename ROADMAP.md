@@ -20,7 +20,7 @@ Roadmap ini mengurutkan delivery requirement, bukan menambah cakupan produk. MVP
 **Requirement:** `KF-ONB-001`; fondasi `KF-RT-001`; baseline `NFR-SEC-001`, `NFR-ISO-001`, `NFR-PRV-001`, `NFR-REL-001`, `NFR-OBS-001`, `NFR-OPS-001`, dan `NFR-CQ-001`.
 
 - Setup repository, toolchain konservatif yang di-pin, lockfile, dan CI: strict lint/typecheck tanpa `any`, file-size gate 500 baris, test, build, serta supply-chain checks (`NFR-SEC-001`, `NFR-OPS-001`, `NFR-CQ-001`).
-- Setup Next.js/Hono di Vercel, Neon PostgreSQL/Managed Better Auth, Upstash, private S3/CloudFront, Resend, dan Ably app terisolasi per environment.
+- Setup Next.js/Hono di Vercel, Neon PostgreSQL/Managed Better Auth, Upstash, private Civo S3 Object Storage, Resend, dan Ably app terisolasi per environment.
 - Implementasi migration baseline, profile aplikasi, workspace teknis, dan membership pemilik.
 - Implementasi satu alur registrasi/onboarding tanpa pilihan tipe akun.
 - Setup request ID, structured error/logging, secret management, dan health check (`NFR-OBS-001`, `NFR-SEC-001`).
@@ -59,7 +59,7 @@ Roadmap ini mengurutkan delivery requirement, bukan menambah cakupan produk. MVP
 
 - Portal klien ter-scope untuk kontrak, invoice, dan album.
 - Upload presign → S3 direct upload → finalize dengan verifikasi metadata dan checksum.
-- Delivery melalui URL CloudFront sementara; S3 Block Public Access tetap aktif.
+- Delivery melalui presigned download URL sementara; object storage tetap private.
 - Album dan selection/favorit per principal klien.
 - Vercel Cron reminder terproteksi dan pengiriman email dengan retry/deduplication.
 - Publish `gallery.published` dan `selection.updated` setelah commit dengan capability portal ter-scope.

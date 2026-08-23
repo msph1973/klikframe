@@ -119,6 +119,7 @@ Target MVP: **RPO ≤24 jam** dan **RTO ≤4 jam** untuk data aplikasi; object m
 - Sebelum production, verifikasi dan catat fitur/retensi backup Neon plan. Jika PITR window tidak memenuhi target, buat daily encrypted logical backup menggunakan read-only backup identity ke bucket backup terpisah dari app bucket.
 - S3 versioning ON; lifecycle noncurrent version mengikuti retention/legal-hold policy, bukan blanket 90-day delete. Backup bucket tidak dapat ditulis credential aplikasi.
 - Backup mencakup schema/migration version, application data, serta inventory object/checksum. Schema managed auth mengikuti prosedur recovery resmi provider; jangan dump/edit tabelnya tanpa dukungan resmi.
+- Restore drill staging bulanan: restore database ke environment terisolasi, reconcile object inventory/checksum, run migration/read smoke, dan catat actual RPO/RTO. Quarterly drill mencakup credential loss/rotation dan portal/session invalidation.
 - Secret rotation runbook mencakup auth cookie (invalidasi session), upload capability, cron, Civo object-storage key, Upstash, Resend, Ably (overlap maksimal token expiry lalu revoke key lama), dan Sentry. Evidence tanpa nilai secret disimpan bersama release record.
 - Rollback app mempromosikan artifact Vercel sebelumnya. Migration memakai expand/contract: deploy backward-compatible schema, app switch, lalu cleanup pada release terpisah. Destructive migration membutuhkan verified backup + rehearsed forward-fix; jangan mengandalkan down migration.
 

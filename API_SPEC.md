@@ -269,7 +269,7 @@ Contract view mengembalikan `consent_version` dan `consent_hash` dari text serve
 | Method/path | Scope | Fungsi | Success |
 |---|---|---|---|
 | `GET /portal/albums/:id` | `album:read` exact target | Album metadata | `200` |
-| `GET /portal/albums/:id/photos` | `album:read` | Cursor `sort_order ASC,id ASC` + temporary CloudFront URLs | `200` |
+| `GET /portal/albums/:id/photos` | `album:read` | Cursor `sort_order ASC,id ASC` + temporary presigned download URLs | `200` |
 | `PUT /portal/albums/:id/selections/:photoId` | `album:select`; photo in album | Create/no-op selection | `204` |
 | `DELETE /portal/albums/:id/selections/:photoId` | `album:select`; photo in album | Remove/no-op selection | `204` |
 

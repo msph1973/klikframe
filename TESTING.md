@@ -19,7 +19,7 @@ Quality gate bukan hanya coverage. Mutasi finansial/legal, tenant isolation, tok
 - Jalankan request melalui Hono app yang sama dengan production, termasuk middleware session/token → membership/scope → validation. Jangan memanggil service langsung untuk contract test.
 - Auth memakai `IdentitySessionPort` test adapter yang menghasilkan signed fixture session pada boundary resmi; jangan mock `auth.getSession()` di tengah middleware.
 - Database memakai disposable Neon test branch/database per CI run dengan migration production yang sama. Schema `neon_auth` tidak dimutasi test aplikasi.
-- S3/CloudFront, Resend, Upstash, dan Ably memakai deterministic adapters di test cepat; nightly/staging contract suite menguji API provider nyata pada bucket/domain/key/database/app terisolasi.
+- Object storage (Civo S3-compatible), Resend, Upstash, dan Ably memakai deterministic adapters di test cepat; nightly/staging contract suite menguji API provider nyata pada bucket/domain/key/database/app terisolasi.
 - Test transaction menjalankan real constraints/triggers untuk cross-tenant FK, payment reversal, typed portal target, dan onboarding concurrency.
 
 ### 2.3 Contract Provider
@@ -28,7 +28,7 @@ Quality gate bukan hanya coverage. Mutasi finansial/legal, tenant isolation, tok
 |---|---|---|
 | Managed Better Auth | Adapter conformance fixtures: valid/expired/missing session | Signup/signin/signout pada dedicated nonproduction auth project; tidak query/delete schema managed |
 | Neon PostgreSQL | Disposable database/branch | Migration, pool, timeout, restore compatibility |
-| AWS S3/CloudFront | Fake object adapter + capability verifier | Presign PUT, checksum, CORS, OAC/private denial, signed URL expiry |
+| Civo S3 Object Storage | Fake object adapter + capability verifier | Presign PUT, checksum, CORS, private-bucket denial, signed URL expiry |
 | Upstash | In-memory limiter with shared contract | Atomic multi-key limit and TTL on isolated database |
 | Resend | Capture adapter with deterministic failures | Verified sandbox recipient/domain; status mapping and redaction |
 | Ably | Fake publisher/token capability verifier + duplicate/order/gap stream | Isolated app: token auth, capability denial, publish/subscribe, reconnect, expiry, redaction |
@@ -107,7 +107,7 @@ Release diblokir bila ada test gagal, explicit/implicit/unsafe `any`, file sourc
 | KF-ORD-001 | orders + state matrix/snapshot | `/orders`, transitions | Owner scope + ETag | Required field/state/retry/audit | Phase 1 |
 | KF-CON-001 | contract snapshot/signature/audit/object | publish/send + portal sign | Typed token, consent/hash, immutable evidence | Hash/concurrent sign/token matrix | Phase 2 |
 | KF-INV-001 | items/ledger/reversal/proof | issue/payment/reverse/proof review | Transaction, idempotency, same-invoice proof | Partial/full/concurrent/reversal/void | Phase 2 |
-| KF-GAL-001 | objects/albums/photos/selections | presign/finalize + portal album | Capability, OAC, token/photo scope | MIME/checksum/orphan/selection/URL expiry | Phase 3 |
+| KF-GAL-001 | objects/albums/photos/selections | presign/finalize + portal album | Capability, private-bucket denial, token/photo scope | MIME/checksum/orphan/selection/URL expiry | Phase 3 |
 | KF-NOT-001 | notification deliveries/dedupe | send + cron reminders | `CRON_SECRET`, redaction, fresh token retry | Provider failure/dedupe/auth/log scan | Phase 2–4 |
 | KF-LIF-001 | workspace lifecycle/audit/retained snapshot | export/deletion request | Reauth, revoke, legal hold/retention | Export scope/30-day/2-year/10-year cleanup | Phase 4 |
 | KF-RT-001 | Versioned event envelope/capability | `/realtime/token` + post-commit publish/refetch | Channel isolation, expiry, payload minimization | Capability/ordering/gap/failure/provider contract | Phase 0–4 |
