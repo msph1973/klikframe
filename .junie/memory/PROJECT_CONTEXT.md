@@ -19,7 +19,7 @@ The repository contains a reviewed implementation specification and no applicati
 
 - Every registrant follows one onboarding flow and automatically receives one business account.
 - Technical tenancy uses `workspaces` and owner membership so future teams do not require ownership migration; team UX and additional roles are Post-MVP.
-- MVP runs Next.js/Hono on Vercel with Neon PostgreSQL and Managed Better Auth, Upstash, private AWS S3/CloudFront, Resend, and Ably.
+- MVP runs Next.js/Hono on Vercel with Neon PostgreSQL and Managed Better Auth, Upstash, private Civo S3 Object Storage (S3-compatible), Resend, and Ably.
 - Hono `/api/v1` is the external API contract; Server Actions reuse the same service/use-case layer.
 - Client portal access is token-based and separate from owner dashboard sessions.
 - Presigned S3 upload, manual payment, Vercel Cron, email, and post-commit Ably event/invalidation are MVP choices. API/database remain canonical; payment gateway, WhatsApp API, workers, AI, and vector search are deferred.

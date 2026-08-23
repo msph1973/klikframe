@@ -2,7 +2,7 @@
 
 ## 1. Gambaran Umum
 
-KlikFrame dibangun dengan arsitektur serverless-first. Frontend dan API utama berjalan di **Vercel** (Next.js App Router + Hono). Database memakai **Neon PostgreSQL** dengan Managed Better Auth; cache/rate limit memakai **Upstash Redis**, object private memakai **AWS S3 + CloudFront**, email memakai **Resend**, dan event bisnis realtime memakai **Ably**. `pgvector` serta worker terpisah ditunda ke Post-MVP.
+KlikFrame dibangun dengan arsitektur serverless-first. Frontend dan API utama berjalan di **Vercel** (Next.js App Router + Hono). Database memakai **Neon PostgreSQL** dengan Managed Better Auth; cache/rate limit memakai **Upstash Redis**, object private memakai **Civo S3 Object Storage**, email memakai **Resend**, dan event bisnis realtime memakai **Ably**. `pgvector` serta worker terpisah ditunda ke Post-MVP.
 
 > Prinsip MVP: 1 repo, 1 deploy Vercel, 0 worker terpisah. Fitur berat ditambah setelah validasi pasar.
 
@@ -18,8 +18,8 @@ flowchart TD
     Client[Owner or Client Browser] --> NextJS[Next.js on Vercel<br/>UI and Hono API]
     NextJS --> NeonDB[(NeonDB PostgreSQL<br/>Drizzle ORM and Neon Auth)]
     NextJS --> Upstash[(Upstash Redis<br/>- Cache & Rate Limit)]
-    NextJS --> S3[(AWS S3<br/>- Foto & PDF Kontrak)]
-    S3 --> CDN2[CloudFront CDN Assets]
+    NextJS --> S3[(Civo S3 Object Storage<br/>- Foto & PDF Kontrak)]
+    S3 --> DL[Presigned Download URL]
     NextJS --> Resend[Resend - Email]
     NextJS --> Ably[Ably - Business Events]
     Ably --> Client
@@ -32,7 +32,7 @@ flowchart TD
     CDN --> NextJS[Next.js di Vercel]
     NextJS --> NeonDB[(NeonDB)]
     NextJS --> Upstash[(Upstash Redis)]
-    NextJS --> S3[(AWS S3)]
+    NextJS --> S3[(Civo S3)]
     NextJS --> Ably[Ably Realtime<br/>- status bayar<br/>- kontrak signed<br/>- foto baru]
     NextJS --> QStash[Upstash QStash<br/>atau BullMQ Worker<br/>di Railway/Render]
     QStash --> Resend2[Resend]
@@ -86,15 +86,14 @@ Boundary request owner: resolve session → lookup membership `owner` aktif → 
 
 > Post-MVP: jika butuh antrean andal, tambahkan **Upstash QStash** (HTTP queue, tanpa server) sebagai pengganti BullMQ yang lebih sederhana, atau **BullMQ + Redis khusus** di Railway/Render jika butuh fitur lanjutan (retry, cron, batch).
 
-### 3.5 Storage — AWS S3 Only
+### 3.5 Storage — Civo S3 Object Storage
 
-- **AWS S3** untuk foto galeri dan PDF kontrak (S3-only, R2 dibuang sesuai request).
-- **CDN:** AWS CloudFront dengan Origin Access Control di depan S3.
-- Bucket private dengan S3 Block Public Access; presigned URL hanya untuk upload dan signed CloudFront URL hanya untuk delivery.
-- Versioning + lifecycle rule mengikuti matriks retensi/legal hold; enkripsi MVP memakai SSE-S3.
+- **Civo S3 Object Storage** (S3-compatible) untuk foto galeri dan PDF kontrak; endpoint per environment (`objectstore.<region>.civo.com`).
+- **Delivery:** presigned download URL ber-expiry yang dihasilkan server on-demand (Civo tidak menyediakan CDN bawaan seperti CloudFront). Browser mengunduh langsung dari endpoint Civo dengan kredensial query ber-expiry, tanpa pernah melihat secret.
+- Bucket private (Block Public Access ON); presigned URL hanya untuk upload dan presigned download hanya untuk delivery.
+- Versioning + lifecycle rule mengikuti matriks retensi/legal hold; enkripsi MVP memakai SSE (server-side) sesuai fitur Civo.
 - Upload MVP wajib direct upload melalui presigned URL lalu finalize; metadata object berstatus `pending` dibuat sebelum upload dan menjadi `available` hanya setelah key, ownership, size, MIME/magic bytes, serta checksum lolos verifikasi.
-- Database menyimpan S3 object key/metadata, bukan URL signed. URL CloudFront dibuat on-demand dengan expiry.
-
+- Database menyimpan S3 object key/metadata, bukan URL signed. Presigned download URL dibuat on-demand dengan expiry.
 ### 3.6 Realtime — Ably Event/Invalidation
 
 - **Ably** adalah dependency MVP untuk event kontrak, invoice, pembayaran, galeri, dan selection. PostgreSQL serta `/api/v1` tetap sumber data kanonis; event tidak membawa snapshot domain.
@@ -120,7 +119,7 @@ Boundary request owner: resolve session → lookup membership `owner` aktif → 
 |---|---|---|---|
 | **Neon Auth** | Wajib | Wajib | Email+password + Google OAuth (via Neon Console) |
 | **Resend** | Wajib | Wajib | Email transaksional (invoice, kontrak) |
-| **AWS S3 + CloudFront** | Wajib | Wajib | Foto & PDF (S3-only) |
+| **Civo S3 Object Storage** | Wajib | Wajib | Foto & PDF (S3-compatible) |
 | **Ably** | Wajib | Wajib | Event/invalidation bisnis; bukan source of truth |
 | **Sentry** | Wajib production | Wajib | Error tracking dan alert |
 | **Midtrans** | **Skip** | Kandidat | MVP = ledger transfer manual tanpa gateway |
@@ -166,7 +165,7 @@ Boundary request owner: resolve session → lookup membership `owner` aktif → 
 2. UI meminta presigned upload untuk album yang berada dalam workspace aktif.
 3. Browser mengunggah langsung ke private S3 lalu memanggil finalize dengan checksum.
 4. Server memverifikasi object dan mengaktifkan metadata di PostgreSQL; upload gagal/incomplete dibersihkan sebagai orphan.
-5. Klien melihat galeri via client portal (CloudFront signed URL).
+5. Klien melihat galeri via client portal (presigned download URL ber-expiry).
 6. Klien menyimpan selection yang terkait principal token; foto tidak memiliki boolean favorit global.
 7. Publish album atau perubahan selection menerbitkan invalidation ter-scope setelah commit dan client refetch state galeri.
 
@@ -176,7 +175,7 @@ Boundary request owner: resolve session → lookup membership `owner` aktif → 
 - **Vercel**: Next.js app (frontend + API + cron) mengikuti baseline `DEPLOYMENT.md`.
 - **NeonDB**: PostgreSQL managed + Managed Better Auth pada schema `neon_auth`.
 - **Upstash**: Redis untuk rate limit/cache.
-- **AWS S3 + CloudFront**: Object storage + CDN (S3-only).
+- **Civo S3 Object Storage**: object storage private (S3-compatible).
 - **Resend**: Email.
 - **Ably**: event/invalidation bisnis dengan app dan key terpisah per environment.
 - **GitHub Actions**: CI/CD (lint, typecheck, test) + `npm audit signatures`.

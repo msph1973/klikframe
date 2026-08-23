@@ -59,7 +59,7 @@ Search by decision ID, status, or topic; this file is not required reading in fu
 
 - **Status:** Accepted
 - **Date:** 2026-08-20
-- **Decision:** MVP uses presigned direct upload to private S3 and temporary CloudFront access; persistent records store object metadata and keys, not signed URLs.
+- **Decision:** MVP uses presigned direct upload to private Civo S3 Object Storage and server-generated presigned download URLs with expiry; persistent records store object metadata and keys, not signed URLs.
 - **Source:** [`DATABASE_SCHEMA.md` — Storage and operations](../../DATABASE_SCHEMA.md#5-storage-dan-operasi), [`API_SPEC.md` — Upload capability](../../API_SPEC.md#94-upload-capability-dan-purpose-matrix), and [`DEPLOYMENT.md`](../../DEPLOYMENT.md).
 
 ### KF-008 — Conservative TypeScript baseline

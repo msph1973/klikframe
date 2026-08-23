@@ -11,14 +11,14 @@
 
 Tabel ini adalah satu-satunya matriks versi kanonis. Versi library lain dipilih dari compatibility/security review saat scaffold lalu di-pin exact dalam `package-lock.json`; tidak ada `latest` pada manifest atau command release. Baseline diverifikasi ulang terhadap sumber resmi sebelum scaffold/upgrade, dan perubahan hanya melalui pull request dengan CI/rollback evidence.
 
-Prasyarat: akun Vercel, Neon project dengan Managed Better Auth, Upstash Redis, AWS account (S3 + CloudFront), Resend domain, Ably app, GitHub repository, serta owner untuk security/privacy/operations. Midtrans, WhatsApp provider, QStash/BullMQ, AI, dan pgvector bukan dependency MVP.
+Prasyarat: akun Vercel, Neon project dengan Managed Better Auth, Upstash Redis, Civo account (S3 Object Storage), Resend domain, Ably app, GitHub repository, serta owner untuk security/privacy/operations. Midtrans, WhatsApp provider, QStash/BullMQ, AI, dan pgvector bukan dependency MVP.
 
 ## 2. Arsitektur Deployment MVP
 
 - Satu Next.js/Hono deployment Vercel untuk UI, `/api/v1`, auth proxy, dan Vercel Cron.
 - Neon PostgreSQL untuk schema aplikasi; Managed Better Auth mengelola identity/session pada `neon_auth`.
 - Upstash Redis hanya untuk shared rate limit dan cache ringan.
-- Private S3 dengan Block Public Access + SSE-S3; CloudFront Origin Access Control untuk read dan trusted key group untuk signed delivery URL.
+- Private Civo S3 Object Storage (S3-compatible) dengan Block Public Access + server-side encryption; delivery memakai presigned download URL ber-expiry yang dihasilkan server.
 - Resend untuk email synchronous-after-commit dengan persisted delivery/dedupe state.
 - Ably untuk event/invalidation bisnis setelah commit; app/key dipisahkan per environment dan tidak menyimpan state kanonis.
 
@@ -36,13 +36,11 @@ NEON_AUTH_BASE_URL=<managed-auth-url>
 NEON_AUTH_COOKIE_SECRET=<random-32-plus-bytes>
 UPSTASH_REDIS_REST_URL=<https-url>
 UPSTASH_REDIS_REST_TOKEN=<secret>
-AWS_ACCESS_KEY_ID=<least-privilege-key>
-AWS_SECRET_ACCESS_KEY=<secret>
-AWS_REGION=ap-southeast-1
+AWS_ACCESS_KEY_ID=<civo-object-storage-access-key>
+AWS_SECRET_ACCESS_KEY=<civo-object-storage-secret-key>
+S3_ENDPOINT=https://objectstore.<region>.civo.com
+AWS_REGION=<civo-region>
 S3_BUCKET=<private-bucket-name>
-CLOUDFRONT_DOMAIN=cdn.klikframe.id
-CLOUDFRONT_KEY_PAIR_ID=<trusted-key-group-public-key-id>
-CLOUDFRONT_PRIVATE_KEY=<pem-secret>
 UPLOAD_CAPABILITY_SECRET=<random-32-plus-bytes>
 DATA_ENCRYPTION_KEY=<versioned-envelope-key>
 CRON_SECRET=<random-32-plus-bytes>
@@ -61,9 +59,8 @@ openssl rand -base64 32
 
 Google OAuth dikonfigurasi pada Neon Console, bukan melalui app env. `NEXTAUTH_*`, `GOOGLE_CLIENT_*`, `S3_PUBLIC_URL`, `R2_*`, `MIDTRANS_*`, `WHATSAPP_*`, `QSTASH_*`, dan worker variables tidak boleh ada pada MVP. Satu-satunya env Ably kanonis adalah `ABLY_API_KEY`; public API key atau `NEXT_PUBLIC_ABLY_*` dilarang.
 
-`CLOUDFRONT_PRIVATE_KEY` disimpan dalam format multiline yang didukung secret store dan hanya tersedia runtime penanda URL; rotation memakai overlap key group. AWS credential hanya boleh `PutObject/GetObject/HeadObject/DeleteObject` pada prefix environment yang diperlukan; bucket-policy mutation tidak diberikan ke app.
-
 ## 4. Langkah Deploy (MVP)
+
 
 1. **Verify baseline dan immutable install:**
     ```bash
@@ -76,9 +73,9 @@ Google OAuth dikonfigurasi pada Neon Console, bukan melalui app env. `NEXTAUTH_*
     npm run lint && npm run typecheck && npm run test && npm run build
     ```
 
-2. **Provision per environment:** Neon branch/project and Managed Auth, isolated Upstash DB, S3 bucket/prefix, CloudFront distribution/key group, Resend domain, Ably app/API key, Sentry project, Vercel project/alias.
+2. **Provision per environment:** Neon branch/project and Managed Auth, isolated Upstash DB, Civo object-storage bucket/prefix per environment, Resend domain, Ably app/API key, Sentry project, Vercel project/alias.
 
-3. **Harden storage:** S3 Block Public Access ON, Object Ownership bucket-owner-enforced, SSE-S3, versioning, lifecycle rules, CORS exact `APP_ORIGIN`, and CloudFront OAC. Direct unauthenticated S3/CloudFront object read must fail.
+3. **Harden storage:** bucket private (Block Public Access ON), server-side encryption, versioning, lifecycle rules, and CORS exact `APP_ORIGIN`. Direct unauthenticated object read must fail; delivery hanya melalui presigned download URL ber-expiry.
 
 4. **Set environment variables** with preview/staging/production scope. Run secret scan and verify no production secret is exposed to preview/build output.
 
@@ -109,7 +106,7 @@ Google OAuth dikonfigurasi pada Neon Console, bukan melalui app env. `NEXTAUTH_*
 
 ## 5. Monitoring & Logging
 
-- Production wajib memiliki Sentry server/client, Vercel Web Vitals, Neon query/connection metrics, Upstash limiter metrics, S3/CloudFront access/error metrics, Resend delivery result, Ably token/publish/failure/reconnect metrics, dan cron summary.
+- Production wajib memiliki Sentry server/client, Vercel Web Vitals, Neon query/connection metrics, Upstash limiter metrics, object-storage access/error metrics (Civo), Resend delivery result, Ably token/publish/failure/reconnect metrics, dan cron summary.
 - Semua request memiliki `X-Request-Id`; audit, delivery, storage finalize, dan provider error dapat dikorelasikan. Raw cookie/token, signed URL query, signature bytes, contact body, database URL, dan secret direduksi sebelum log/APM.
 - Alert minimum: error-rate spike, p95 budget breach, database saturation, rate-limit backend failure, Ably auth/publish failure spike, cron tidak sukses >26 jam, email failure spike, orphan/pending upload backlog, dan backup/restore drill overdue.
 - Log operasional target 30 hari dan audit mengikuti 2/10-year policy. Sebelum production, verifikasi plan platform memenuhi target; jika tidak, aktifkan encrypted log drain dengan least-privilege access.
@@ -123,8 +120,8 @@ Target MVP: **RPO ≤24 jam** dan **RTO ≤4 jam** untuk data aplikasi; object m
 - S3 versioning ON; lifecycle noncurrent version mengikuti retention/legal-hold policy, bukan blanket 90-day delete. Backup bucket tidak dapat ditulis credential aplikasi.
 - Backup mencakup schema/migration version, application data, serta inventory object/checksum. Schema managed auth mengikuti prosedur recovery resmi provider; jangan dump/edit tabelnya tanpa dukungan resmi.
 - Restore drill staging bulanan: restore database ke environment terisolasi, reconcile object inventory/checksum, run migration/read smoke, dan catat actual RPO/RTO. Quarterly drill mencakup credential loss/rotation dan portal/session invalidation.
+- Secret rotation runbook mencakup auth cookie (invalidasi session), upload capability, cron, Civo object-storage key, Upstash, Resend, Ably (overlap maksimal token expiry lalu revoke key lama), dan Sentry. Evidence tanpa nilai secret disimpan bersama release record.
 - Rollback app mempromosikan artifact Vercel sebelumnya. Migration memakai expand/contract: deploy backward-compatible schema, app switch, lalu cleanup pada release terpisah. Destructive migration membutuhkan verified backup + rehearsed forward-fix; jangan mengandalkan down migration.
-- Secret rotation runbook mencakup auth cookie (invalidasi session), upload capability, cron, AWS, CloudFront key overlap, Upstash, Resend, Ably (overlap maksimal token expiry lalu revoke key lama), dan Sentry. Evidence tanpa nilai secret disimpan bersama release record.
 
 ## 7. Email dan Cron Reliability
 
@@ -137,9 +134,8 @@ Target MVP: **RPO ≤24 jam** dan **RTO ≤4 jam** untuk data aplikasi; object m
 - [ ] Exact Node/npm/TypeScript/Next baseline, lockfile, immutable install, document/file-size/lint/type/test/build/E2E gates lulus; tidak ada `any` dan file source/test >500 baris di luar allowlist.
 - [ ] Seluruh env canonical terisi pada scope yang benar; forbidden/legacy env, private endpoint, dan secret tidak ada di repository/build/log.
 - [ ] Managed Auth Beta boundary, migration/reconciliation, email+OAuth/session flows, dan provider exit path diuji.
-- [ ] Migration checked-in lulus staging; tenant FK, onboarding concurrency, dan rollback/forward-fix drill memiliki evidence.
-- [ ] S3 private/OAC/SSE-S3/versioning/CORS/presign/finalize/checksum/orphan cleanup dan signed URL expiry teruji.
-- [ ] CloudFront key rotation, AWS least privilege, Upstash shared limiter, Resend SPF/DKIM/dedupe/fresh-token retry teruji.
+- [ ] Object storage private/SSE/versioning/CORS/presign/finalize/checksum/orphan cleanup dan presigned download URL expiry teruji.
+- [ ] Civo key rotation, least-privilege credential, Upstash shared limiter, Resend SPF/DKIM/dedupe/fresh-token retry teruji.
 - [ ] Ably app terpisah per environment, server-only key, owner/portal capability isolation, token expiry/rotation, post-commit event, redaction, duplicate/order/gap, outage/refetch fallback teruji.
 - [ ] `CRON_SECRET`, canonical route, daily dedupe, missed-run alert, dan manual retry teruji.
 - [ ] Sentry/metrics/request ID/redaction/alerts aktif; public health tidak membocorkan dependency.

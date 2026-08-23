@@ -72,7 +72,7 @@ MVP dinyatakan selesai ketika satu pemilik akun bisnis dapat mendaftar, menyeles
 - Template kontrak, snapshot kontrak, PDF React-PDF, tanda tangan, dan audit evidence.
 - Invoice item, pembayaran transfer manual parsial/penuh, bukti pembayaran opsional, dan reminder email.
 - Portal klien berbasis opaque token.
-- Album, upload langsung presigned S3, delivery private CloudFront, dan pilihan/favorit klien.
+- Album, upload langsung presigned S3, delivery presigned download URL private, dan pilihan/favorit klien.
 - Event bisnis realtime melalui Ably untuk perubahan kontrak, invoice, pembayaran, galeri, dan selection; event hanya memicu invalidation/refetch API.
 - Export data dan permintaan penghapusan akun dengan pengecualian retensi yang dijelaskan.
 - Logging, rate limit, observability minimum, dan quality gates rilis.
