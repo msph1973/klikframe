@@ -5,6 +5,10 @@
  * (`fake-rate-limiter.ts`) mirrors the exact same observable semantics so
  * fast CI tests exercise the shared contract (TESTING.md §2.3).
  *
+ * Both implementations use FIXED windows — bucket `<key>:<window index>`
+ * with index `floor(now / windowMs)` — mirroring @upstash/ratelimit's
+ * fixed-window algorithm; nothing here is a sliding/logged window.
+ *
  * Shared multi-window contract (mirrors @upstash/ratelimit's combined
  * limiters): every window is evaluated and consumed in ONE atomic step;
  * the overall result succeeds only if EVERY window passes, and consumed
@@ -27,7 +31,10 @@ export interface RateLimitSuccess {
   readonly limit: number;
   /** Hits still available in the tightest window. */
   readonly remaining: number;
-  /** When every window has fully rolled over (max window end). */
+  /**
+   * When every configured window has fully rolled over (the latest window
+   * end) — the earliest instant all counters are fresh again.
+   */
   readonly resetAt: Date;
 }
 
@@ -37,7 +44,13 @@ export interface RateLimitFailure {
   readonly limit: number;
   /** Remaining hits in the binding window (0 on failure). */
   readonly remaining: number;
-  /** When the binding window rolls over and a retry can succeed. */
+  /**
+   * Earliest instant a retry can succeed: EVERY window left exhausted by
+   * this call (the blocked windows plus any window drained to zero by
+   * taking its last slot) must have rolled over, so when several windows
+   * are exhausted with different reset times this is the LATEST of their
+   * rollover times — never an earlier single-window rollover.
+   */
   readonly resetAt: Date;
   /** Milliseconds until `resetAt`; feeds a `Retry-After` header. */
   readonly retryAfterMs: number;
