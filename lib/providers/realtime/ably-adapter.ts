@@ -1,4 +1,5 @@
-import { createHmac, hkdfSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { TokenSigningKey } from "./token-signing-key";
 import { z } from "zod";
 import type { Clock } from "@/lib/shared/clock";
 import { getEnv } from "@/lib/config/env";
@@ -146,21 +147,18 @@ export class AblyRestPublisher implements RealtimePublisher {
  */
 export class AblyTokenIssuer implements RealtimeTokenIssuer {
   private readonly clock: Clock;
-  private readonly credentials: { readonly keyName: string; readonly keySecret: string };
+  private readonly keyName: string;
   /**
    * Per-purpose signing key derived from the account secret via HKDF-SHA256
-   * (info "ably:token-request"). Ably's server verifies TokenRequest MACs with
-   * the same derivation, and deriving means the raw master secret never feeds
-   * a MAC directly.
+   * (see TokenSigningKey). The raw master secret never keys a MAC directly.
    */
-  private readonly signingKey: Buffer;
+  private readonly signingKey: TokenSigningKey;
 
   constructor(options: Pick<AblyAdapterOptions, "clock">) {
     this.clock = options.clock;
-    this.credentials = requireAblyKey("token");
-    this.signingKey = Buffer.from(
-      hkdfSync("sha256", this.credentials.keySecret, Buffer.alloc(0), "ably:token-request", 32),
-    );
+    const credentials = requireAblyKey("token");
+    this.keyName = credentials.keyName;
+    this.signingKey = TokenSigningKey.derive(credentials.keySecret);
   }
 
   async issueCapability(channel: RealtimeChannel): Promise<RealtimeTokenCapability & { tokenRequest: AblyTokenRequest }> {
@@ -190,13 +188,13 @@ export class AblyTokenIssuer implements RealtimeTokenIssuer {
     const capability = JSON.stringify({ [channelName]: ["subscribe"] });
     const nonce = randomUUID();
     const timestamp = Math.floor(this.clock.now().getTime() / 1000);
-    const signingInput = [this.credentials.keyName, String(ttlSeconds), capability, "", String(timestamp), nonce].join("\n");
+    const signingInput = [this.keyName, String(ttlSeconds), capability, "", String(timestamp), nonce].join("\n");
     const tokenRequest: AblyTokenRequest = {
-      keyName: this.credentials.keyName,
+      keyName: this.keyName,
       ttlSeconds,
       timestamp,
       nonce,
-      mac: createHmac("sha256", this.signingKey).update(signingInput).digest("base64"),
+      mac: this.signingKey.sign(signingInput),
     };
     const shaped = ablyTokenRequestSchema.safeParse(tokenRequest);
     if (!shaped.success) {
