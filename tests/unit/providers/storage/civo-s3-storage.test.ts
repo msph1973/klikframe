@@ -263,7 +263,7 @@ describe("CivoS3Storage — s3Error classification branches", () => {
     delete process.env.AWS_SECRET_ACCESS_KEY;
     resetEnvCacheForTests();
     expect(() => new CivoS3Storage({ clock: new FixedClock(BASE) })).toThrow(
-      /AWS_ACCESS_KEY_ID/,
+      expect.objectContaining({ kind: "permanent", provider: "storage", operation: "configure" }),
     );
     envS3();
   });
