@@ -1,5 +1,5 @@
 import { type ExtractTablesWithRelations } from "drizzle-orm";
-import type { NeonTransaction } from "drizzle-orm/neon-http";
+import type { NeonTransaction } from "drizzle-orm/neon-serverless";
 
 // The frozen vendor-neutral contract (DATABASE_SCHEMA.md §7). This file
 // adapts it to Drizzle; the port itself must not change.
@@ -9,9 +9,9 @@ import type * as schema from "./schema";
 
 /**
  * Transaction context handed to repository work: a Drizzle
- * `NeonTransaction` bound to the caller's serializable transaction. It is
- * structurally the same query interface the plain `Db` exposes, so callers
- * stay vendor-neutral.
+ * `NeonTransaction` (neon-serverless WebSocket driver) bound to the
+ * caller's serializable transaction. It is structurally the same query
+ * interface the plain `Db` exposes, so callers stay vendor-neutral.
  */
 export type DbTx = NeonTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
 
@@ -62,7 +62,7 @@ export class DrizzleTransactionRunner implements TransactionRunner<DbTx> {
 }
 
 // Advisory-lock helpers live in ./advisory-lock (brief file ownership).
-export { withAdvisoryLock, advisoryLockKey } from "./advisory-lock";
+export { advisoryLockKey, advisoryLockKeyString, withAdvisoryLock } from "./advisory-lock";
 
 function isRetryablePostgresError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;

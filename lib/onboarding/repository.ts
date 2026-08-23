@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { auditEvents } from "@/lib/db/schema/audit-events";
 import { profiles } from "@/lib/db/schema/profiles";
@@ -18,7 +18,8 @@ function newId(): string {
  * function takes the caller's transaction context so profile, workspace,
  * membership, audit event, and idempotency record commit or roll back as
  * one atomic unit. Uniqueness is enforced by the database's partial unique
- * indexes — never by in-memory checks.
+ * indexes — never by in-memory checks. Slug hand-out is owner-checked:
+ * an existing workspace is only ever returned to its authenticated owner.
  */
 
 export interface UpsertProfileInput {
@@ -59,14 +60,43 @@ export interface CreateOrLoadWorkspaceInput {
 }
 
 /**
+ * The slug already belongs to a workspace this authenticated identity does
+ * not own. Route layer maps this to `409 SLUG_CONFLICT`; it is deliberately
+ * NOT the raw unique-violation path, which only fires for concurrent
+ * same-identity creation.
+ */
+export class WorkspaceSlugConflictError extends Error {
+  readonly slug: string;
+
+  constructor(slug: string) {
+    super(`workspace slug ${slug} is already taken by another owner`);
+    this.name = "WorkspaceSlugConflictError";
+    this.slug = slug;
+  }
+}
+
+export interface WorkspaceRecord {
+  readonly id: string;
+  readonly name: string;
+  readonly slug: string;
+  readonly status: string;
+  /** True when this call created the row; false for an owned retry load. */
+  readonly created: boolean;
+}
+
+/**
  * Loads the workspace already owning `slug`, or creates it. The unique slug
  * index makes concurrent creation safe; on conflict the existing row is
- * returned (§7: retry returns the same workspace).
+ * returned — but ONLY to the authenticated owner of that row. A different
+ * identity colliding on a taken slug raises
+ * {@link WorkspaceSlugConflictError} instead of receiving the foreign
+ * tenant (P0 PRRT_kwDOT_C_FM6bh711): ownership is resolved from
+ * `auth_user_id`, never trusted from caller input.
  */
 export async function createOrLoadWorkspace(
   tx: DbTx,
-  input: CreateOrLoadWorkspaceInput,
-): Promise<{ id: string; name: string; slug: string; status: string }> {
+  input: CreateOrLoadWorkspaceInput & { readonly authUserId: string },
+): Promise<WorkspaceRecord> {
   const inserted = await tx
     .insert(workspaces)
     .values({
@@ -87,19 +117,43 @@ export async function createOrLoadWorkspace(
       name: created.name,
       slug: created.slug,
       status: created.status,
+      created: true,
     };
   }
 
-  const existing = await tx
-    .select()
+  const rows = await tx
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      slug: workspaces.slug,
+      status: workspaces.status,
+    })
     .from(workspaces)
     .where(eq(workspaces.slug, input.slug))
     .limit(1);
-  const found = existing[0];
+  const found = rows[0];
   if (found === undefined) {
     throw new Error(`workspace with slug ${input.slug} vanished mid-transaction`);
   }
-  return { id: found.id, name: found.name, slug: found.slug, status: found.status };
+
+  // P0 fix (PRRT_kwDOT_C_FM6bh711): hand the existing tenant out only to
+  // its authenticated owner — resolve ownership from workspace_members.
+  const owners = await tx
+    .select({ authUserId: workspaceMembers.authUserId })
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, found.id),
+        eq(workspaceMembers.role, "owner"),
+        eq(workspaceMembers.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (owners[0]?.authUserId !== input.authUserId) {
+    throw new WorkspaceSlugConflictError(input.slug);
+  }
+
+  return { ...found, created: false };
 }
 
 export interface MembershipInput {
@@ -109,15 +163,32 @@ export interface MembershipInput {
 }
 
 /**
- * Creates the active owner membership for a fresh workspace. Callers must
- * have serialized same-identity onboarding via {@link withAdvisoryLock};
- * the partial unique indexes still reject any second active owner at the
- * database level.
+ * Loads the active owner membership when one already exists for this
+ * identity + workspace (idempotent retry after a first commit), otherwise
+ * inserts it fresh. Callers must have serialized same-identity onboarding
+ * via {@link withAdvisoryLock}; the partial unique indexes still reject any
+ * second active owner at the database level.
  */
 export async function createActiveOwnerMembership(
   tx: DbTx,
   input: MembershipInput,
 ): Promise<string> {
+  const existing = await tx
+    .select({ id: workspaceMembers.id })
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, input.workspaceId),
+        eq(workspaceMembers.authUserId, input.authUserId),
+        eq(workspaceMembers.role, "owner"),
+        eq(workspaceMembers.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (existing[0] !== undefined) {
+    return existing[0].id;
+  }
+
   const rows = await tx
     .insert(workspaceMembers)
     .values({

@@ -68,7 +68,10 @@ export async function runOnboardingTransaction(
 ): Promise<OnboardingResult> {
   return withAdvisoryLock(tx, input.profile.authUserId, async () => {
     const profileId = await upsertProfile(tx, input.profile);
-    const workspace = await createOrLoadWorkspace(tx, input.workspace);
+    const workspace = await createOrLoadWorkspace(tx, {
+      ...input.workspace,
+      authUserId: input.profile.authUserId,
+    });
     const membershipId = await createActiveOwnerMembership(tx, {
       workspaceId: workspace.id,
       authUserId: input.profile.authUserId,
