@@ -23,6 +23,9 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript
+          # Scoped analysis config: paths/paths-ignore from
+          # .github/codeql/codeql-config.yml.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
