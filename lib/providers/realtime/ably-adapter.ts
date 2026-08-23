@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { TokenSigningKey } from "./token-signing-key";
+import { signTokenRequestMac, generateNonce } from "./token-signing-key";
 import { z } from "zod";
 import type { Clock } from "@/lib/shared/clock";
 import { getEnv } from "@/lib/config/env";
@@ -35,8 +34,10 @@ import {
  */
 const ablyTokenRequestSchema = z.object({
   keyName: z.string().min(1),
-  ttlSeconds: z.number().int().positive(),
-  timestamp: z.number(),
+  ttl: z.number().int().positive(),
+  capability: z.string().min(2),
+  clientId: z.string().optional(),
+  timestamp: z.number().int(),
   nonce: z.string().min(1),
   mac: z.string().min(1),
 });
@@ -147,18 +148,11 @@ export class AblyRestPublisher implements RealtimePublisher {
  */
 export class AblyTokenIssuer implements RealtimeTokenIssuer {
   private readonly clock: Clock;
-  private readonly keyName: string;
-  /**
-   * Per-purpose signing key derived from the account secret via HKDF-SHA256
-   * (see TokenSigningKey). The raw master secret never keys a MAC directly.
-   */
-  private readonly signingKey: TokenSigningKey;
+  private readonly credentials: { readonly keyName: string; readonly keySecret: string };
 
   constructor(options: Pick<AblyAdapterOptions, "clock">) {
     this.clock = options.clock;
-    const credentials = requireAblyKey("token");
-    this.keyName = credentials.keyName;
-    this.signingKey = TokenSigningKey.derive(credentials.keySecret);
+    this.credentials = requireAblyKey("token");
   }
 
   async issueCapability(channel: RealtimeChannel): Promise<RealtimeTokenCapability & { tokenRequest: AblyTokenRequest }> {
@@ -184,17 +178,22 @@ export class AblyTokenIssuer implements RealtimeTokenIssuer {
    * Capability is subscribe-only for the exact derived channel.
    */
   private signTokenRequest(channelName: string, expiresAtMs: number): AblyTokenRequest {
-    const ttlSeconds = Math.max(1, Math.floor((expiresAtMs - this.clock.now().getTime()) / 1000));
+    // Ably TokenRequest wire contract: `ttl` and `timestamp` are
+    // MILLISECONDS; the canonical fields are `ttl` + `capability`
+    // (clientId optional/empty here). The MAC covers the identical
+    // signing input the Ably server recomputes.
+    const ttlMs = Math.max(1, expiresAtMs - this.clock.now().getTime());
+    const timestamp = this.clock.now().getTime();
     const capability = JSON.stringify({ [channelName]: ["subscribe"] });
-    const nonce = randomUUID();
-    const timestamp = Math.floor(this.clock.now().getTime() / 1000);
-    const signingInput = [this.keyName, String(ttlSeconds), capability, "", String(timestamp), nonce].join("\n");
+    const nonce = generateNonce();
+    const signingInput = [this.credentials.keyName, String(ttlMs), capability, "", String(timestamp), nonce].join("\n");
     const tokenRequest: AblyTokenRequest = {
-      keyName: this.keyName,
-      ttlSeconds,
+      keyName: this.credentials.keyName,
+      ttl: ttlMs,
+      capability,
       timestamp,
       nonce,
-      mac: this.signingKey.sign(signingInput),
+      mac: signTokenRequestMac(this.credentials.keySecret, signingInput),
     };
     const shaped = ablyTokenRequestSchema.safeParse(tokenRequest);
     if (!shaped.success) {

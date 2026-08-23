@@ -119,7 +119,7 @@ export class UpstashRestRateLimiter implements RateLimiter {
         "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured for the Upstash adapter",
       );
     }
-    this.endpoint = `${url.replace(/\/+$/, "")}/redis`;
+    this.endpoint = url.replace(/\/+$/, "");
     this.token = token;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
