@@ -150,10 +150,12 @@ export class UpstashRestRateLimiter implements RateLimiter {
     if (raw !== null && typeof raw === "object" && "error" in raw) {
       const envelope = raw as UpstashEnvelope;
       if (typeof envelope.error === "string" && /noscript/i.test(envelope.error)) {
-        await this.loadScript();
+        // The in-flight load's SHA is already known — reuse it for the
+        // single recovery EVALSHA instead of discarding it and paying for
+        // a second SCRIPT LOAD round trip (cubic FM6bh9oJ). Only a
+        // genuinely unknown SHA is evicted from the cache.
         this.scriptSha = null;
-        const reloadedSha = await this.loadScriptSha();
-        raw = await this.invokeEvalsha(reloadedSha, args);
+        raw = await this.invokeEvalsha(sha, args);
       }
     }
     const shaped = upstashEnvelopeSchema.safeParse(raw);

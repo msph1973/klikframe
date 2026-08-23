@@ -113,7 +113,9 @@ describe("Upstash REST adapter — additional contract branches", () => {
       await Promise.resolve();
       calls.push(url as string);
       if ((url as string).includes("/script-load")) {
-        return new Response(JSON.stringify({ result: evalshaCalls === 0 ? "old-sha" : "fresh-sha" }), { status: 200 });
+        // The first SHA is cached and replayed after the NOSCRIPT retry:
+        // exactly ONE script load must happen (cubic FM6bh9oJ).
+        return new Response(JSON.stringify({ result: "only-sha" }), { status: 200 });
       }
       evalshaCalls += 1;
       if (evalshaCalls === 1) {
@@ -124,7 +126,9 @@ describe("Upstash REST adapter — additional contract branches", () => {
     const limiter = new UpstashRestRateLimiter(new FixedClock(BASE), { fetchImpl });
     const result = await limiter.limit([{ key: "k2", limit: 3, windowMs: 60_000 }]);
     expect(result.success).toBe(true);
-    expect(calls.some((url) => url.includes("/script-load")));
+    const scriptLoads = calls.filter((url) => url.includes("/script-load"));
+    expect(scriptLoads).toHaveLength(1);
+    expect(calls.filter((url) => url.includes("/evalsha/only-sha"))).toHaveLength(2);
   });
 
   it("maps non-JSON success bodies on script load to malformed_response", async () => {
