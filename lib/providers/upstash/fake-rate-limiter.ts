@@ -31,77 +31,77 @@ export class FakeRateLimiter implements RateLimiter {
 
     const nowMs = this.clock.now().getTime();
 
-    // Pass 1 — compute per-window outcomes WITHOUT mutating bucket state,
-    // so the atomic multi-key contract holds even though this fake runs on
-    // a single-threaded event loop.
-    const evaluated = windows.map((window) => {
+    // One sequential consume pass mirroring the Lua script line-for-line:
+    // each window occurrence INCRs its bucket against the bucket's CURRENT
+    // value (two windows may share one bucket when key+windowMs coincide,
+    // and a blocked occurrence's rollback must be visible to the next),
+    // then either keeps the hit or rolls it back when the limit is passed.
+    // The reported row matches the script: a granted window reports its
+    // incremented count (>= 1, possibly == limit after draining the last
+    // slot); a blocked window reports 0 — the unambiguous sentinel, since
+    // a granted row can never be 0.
+    const outcomes = windows.map((window) => {
       this.assertWindow(window);
       const index = Math.floor(nowMs / window.windowMs);
       const bucketKey = `${window.key}:${String(index)}`;
-      // A missing bucket counts as zero hits; the Map is created only when
-      // the consume pass actually records a hit.
       const used = this.buckets.get(bucketKey)?.get(index) ?? 0;
+      if (used >= window.limit) {
+        return { window, resetAtMs: (index + 1) * window.windowMs, blocked: true as const };
+      }
+      const bucket = this.buckets.get(bucketKey) ?? new Map<number, number>();
+      if (!this.buckets.has(bucketKey)) this.buckets.set(bucketKey, bucket);
+      bucket.set(index, used + 1);
       return {
         window,
-        index,
-        bucketKey,
-        used,
-        remaining: window.limit - used,
         resetAtMs: (index + 1) * window.windowMs,
+        blocked: false as const,
+        used: used + 1,
       };
     });
 
-    // The binding window is the one with the fewest slots left; ties break
-    // to the earliest rollover so `resetAt` matches the real limiter's
-    // "soonest retry" behavior.
-    let binding = evaluated[0];
-    if (!binding) {
-      throw new ProviderError("permanent", { provider: "upstash", operation: "limit" }, "At least one rate limit window is required");
-    }
-    for (const candidate of evaluated.slice(1)) {
-      if (
-        candidate.remaining < binding.remaining ||
-        (candidate.remaining === binding.remaining && candidate.resetAtMs < binding.resetAtMs)
-      ) {
-        binding = candidate;
-      }
+    /** Slots left after this call, per window, from its committed row. */
+    function postRemaining(outcome: (typeof outcomes)[number]): number {
+      return outcome.blocked ? 0 : Math.max(0, outcome.window.limit - outcome.used);
     }
 
-    // Pass 2 — commit. Windows with a slot left always record their hit;
-    // an exhausted window does not. This mirrors the Lua script's atomic
-    // INCR-then-decide flow, where successful windows are not rolled back.
-    for (const entry of evaluated) {
-      if (entry.remaining <= 0) continue;
-      let bucket = this.buckets.get(entry.bucketKey);
-      if (!bucket) {
-        bucket = new Map<number, number>();
-        this.buckets.set(entry.bucketKey, bucket);
-      }
-      bucket.set(entry.index, entry.used + 1);
-    }
-
-    const overallSuccess = binding.remaining > 0;
-
-    if (overallSuccess) {
-      const tightest = evaluated.reduce((min, entry) =>
-        entry.window.limit < min.window.limit ? entry : min,
+    // Success iff NO window was rolled back — taking a window's very last
+    // slot is still a success (that window simply reports used == limit).
+    if (outcomes.every((outcome) => !outcome.blocked)) {
+      const tightest = outcomes.reduce((min, outcome) =>
+        outcome.window.limit < min.window.limit ? outcome : min,
       );
       return {
         success: true,
         limit: tightest.window.limit,
-        remaining: binding.remaining - 1,
+        remaining: Math.min(...outcomes.map(postRemaining)),
         // Every configured window must have rolled over before a caller
         // can treat all counters as fresh again.
-        resetAt: new Date(Math.max(...evaluated.map((entry) => entry.resetAtMs))),
+        resetAt: new Date(Math.max(...outcomes.map((outcome) => outcome.resetAtMs))),
       };
     }
 
+    // Failure binds to the set of windows whose POST-consume remaining is
+    // zero: the blocked windows PLUS windows this call just drained. A
+    // retry can only succeed once every such window has rolled over, so
+    // resetAt is the LATEST rollover among them; limit and resetAt label
+    // come from the member attaining that maximum (ties break to the
+    // lowest index, matching the real adapter's reduction order).
+    let binding: (typeof outcomes)[number] | undefined;
+    for (const outcome of outcomes) {
+      if (postRemaining(outcome) !== 0) continue;
+      if (!binding || outcome.resetAtMs > binding.resetAtMs) {
+        binding = outcome;
+      }
+    }
+    if (!binding) {
+      throw new ProviderError("permanent", { provider: "upstash", operation: "limit" }, "At least one rate limit window is required");
+    }
     return {
       success: false,
       limit: binding.window.limit,
       remaining: 0,
       resetAt: new Date(binding.resetAtMs),
-      retryAfterMs: binding.resetAtMs - nowMs,
+      retryAfterMs: Math.max(0, binding.resetAtMs - nowMs),
     };
   }
 
@@ -120,5 +120,13 @@ export class FakeRateLimiter implements RateLimiter {
         "Rate limit window requires a positive integer windowMs",
       );
     }
+    if (window.key.length === 0) {
+      throw new ProviderError(
+        "permanent",
+        { provider: "upstash", operation: "limit" },
+        "Rate limit window requires a non-empty key",
+      );
+    }
   }
 }
+

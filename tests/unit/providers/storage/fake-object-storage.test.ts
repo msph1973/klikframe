@@ -105,6 +105,70 @@ describe("FakeObjectStorage — expiry enforcement", () => {
   });
 });
 
+describe("FakeObjectStorage — URL identity (exact operation + path)", () => {
+  it("does not resolve a download URL for a different key sharing the prefix", async () => {
+    const store = storage();
+    const outcome = await store.presignUpload({
+      key: "ws_1/proof/a.jpg",
+      contentType: "image/jpeg",
+      sizeBytes: 64,
+      checksumSha256: CHECKSUM,
+    });
+    await store.consumePresignedUpload({
+      outcome,
+      key: "ws_1/proof/a.jpg",
+      sizeBytes: 64,
+      contentType: "image/jpeg",
+      checksumSha256: CHECKSUM,
+    });
+    // A download URL minted for `a.jpg` but pointed at a longer sibling
+    // path must not resolve to the shorter key (prefix confusion).
+    const forged = outcome.url.replace("/upload/", "/download/").replace(
+      encodeURIComponent("a.jpg"),
+      encodeURIComponent("a.jpg.bak"),
+    );
+    await expect(store.consumePresignedDownload(forged)).rejects.toMatchObject({
+      kind: "permanent",
+      operation: "presignDownload",
+    });
+  });
+
+  it("rejects an upload URL used as a download capability", async () => {
+    const store = storage();
+    const outcome = await store.presignUpload({
+      key: "ws_2/proof/b.jpg",
+      contentType: "image/jpeg",
+      sizeBytes: 64,
+      checksumSha256: CHECKSUM,
+    });
+    // Same encoded pathname, wrong operation segment.
+    await expect(store.consumePresignedDownload(outcome.url)).rejects.toMatchObject({
+      kind: "permanent",
+      operation: "presignDownload",
+    });
+  });
+
+  it("rejects an upload whose URL references a different key entirely", async () => {
+    const store = storage();
+    const outcome = await store.presignUpload({
+      key: "ws_3/proof/c.jpg",
+      contentType: "image/jpeg",
+      sizeBytes: 64,
+      checksumSha256: CHECKSUM,
+    });
+    await expect(
+      store.consumePresignedUpload({
+        outcome,
+        key: "ws_3/proof/other.jpg",
+        sizeBytes: 64,
+        contentType: "image/jpeg",
+        checksumSha256: CHECKSUM,
+      }),
+    ).rejects.toMatchObject({ kind: "permanent", operation: "presignUpload" });
+    expect(store.objectCount).toBe(0);
+  });
+});
+
 describe("FakeObjectStorage — head/delete of nonexistent keys", () => {
   it("returns not_found for head of a missing object instead of throwing", async () => {
     const store = storage();

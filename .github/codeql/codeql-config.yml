@@ -1,7 +1,18 @@
 # CodeQL configuration for KlikFrame.
 #
-# paths/paths-ignore scope the analysis. Query filters for specific rules
-# are configured in the workflow's `queries` block if ever needed.
+# paths/paths-ignore scope the analysis; the query-filters block below
+# carries targeted query exclusions.
+#
+# `js/insufficient-password-hash` fires on
+# lib/providers/realtime/token-signing-key.ts, whose createHmac implements
+# the Ably TokenRequest wire-protocol MAC (HMAC-SHA256 mandated by
+# ably.com/docs/api/token-request-spec) — it is not password storage. The
+# filter cannot be path-scoped (query-filters match query metadata only),
+# so any future password-hashing introduction must rely on review, not
+# this query.
+query-filters:
+  - exclude:
+      id: js/insufficient-password-hash
 
 paths:
   - app

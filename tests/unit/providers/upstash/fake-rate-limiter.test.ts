@@ -118,9 +118,72 @@ describe("FakeRateLimiter — edge branches", () => {
     expect(result.resetAt.getTime()).toBe(BASE.getTime() + 60_000);
   });
 
-  it("reports zero retryAfterMs exactly at rollover", async () => {
-    const atBoundary = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 59_999)));
+  it("reports retryAfterMs 0 exactly at the window boundary", async () => {
+    // Exactly one full window after BASE: the fresh window admits the hit.
+    const atBoundary = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 60_000)));
     const first = await atBoundary.limit([{ key: "edge", limit: 1, windowMs: 60_000 }]);
     expect(first.success).toBe(true);
+
+    // One millisecond BEFORE the boundary the same single-slot window is
+    // exhausted, and a failure there must report zero remaining wait.
+    const justBefore = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 59_999)));
+    await justBefore.limit([{ key: "edge2", limit: 1, windowMs: 60_000 }]);
+    const blocked = await justBefore.limit([{ key: "edge2", limit: 1, windowMs: 60_000 }]);
+    if (blocked.success) throw new Error("expected failure");
+    expect(blocked.retryAfterMs).toBe(1);
+  });
+
+  it("records both hits when two windows share one bucket (same key and span)", async () => {
+    // Two windows with identical key AND windowMs resolve to the same
+    // `<key>:<index>` bucket; each must consume its own hit so two calls
+    // fill a limit-2 bucket instead of writing used+1 twice.
+    const { limiter } = limiterAt();
+    const first = await limiter.limit([
+      { key: "shared", limit: 2, windowMs: 30_000 },
+      { key: "shared", limit: 2, windowMs: 30_000 },
+    ]);
+    expect(first.success).toBe(true);
+    if (!first.success) throw new Error("expected success");
+    expect(first.remaining).toBe(0);
+
+    const second = await limiter.limit([
+      { key: "shared", limit: 2, windowMs: 30_000 },
+      { key: "shared", limit: 2, windowMs: 30_000 },
+    ]);
+    expect(second.success).toBe(false);
+    if (second.success) throw new Error("expected failure");
+    // Both hits persisted; the binding window reports zero remaining.
+    expect(second.remaining).toBe(0);
+    expect(second.limit).toBe(2);
+    expect(second.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it("binds failure metadata to the window this call exhausted", async () => {
+    // Window B has one slot left pre-call; taking it must make B — not A,
+    // which still has headroom — the reported binding window.
+    const { limiter } = limiterAt();
+    const first = await limiter.limit([
+      { key: "wide", limit: 10, windowMs: 120_000 },
+      { key: "tight", limit: 1, windowMs: 30_000 },
+    ]);
+    expect(first.success).toBe(true);
+
+    const second = await limiter.limit([
+      { key: "wide", limit: 10, windowMs: 120_000 },
+      { key: "tight", limit: 1, windowMs: 30_000 },
+    ]);
+    expect(second.success).toBe(false);
+    if (second.success) throw new Error("expected failure");
+    expect(second.limit).toBe(1);
+    // resetAt binds to the tight window's rollover, not the wide one's.
+    expect(second.resetAt.getTime()).toBe(BASE.getTime() + 30_000);
+    expect(second.retryAfterMs).toBe(30_000);
+  });
+
+  it("rejects an empty window key like the real adapter", async () => {
+    const { limiter } = limiterAt();
+    await expect(
+      limiter.limit([{ key: "", limit: 5, windowMs: 60_000 }]),
+    ).rejects.toMatchObject({ kind: "permanent", provider: "upstash" });
   });
 });

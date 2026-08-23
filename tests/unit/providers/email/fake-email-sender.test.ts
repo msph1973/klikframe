@@ -41,6 +41,31 @@ describe("FakeEmailSender — capture", () => {
     expect(replay.messageId).toBe(first.messageId);
     expect(fake.deliveries).toHaveLength(2);
   });
+
+  it("exposes the full sent request content for portal-link extraction", async () => {
+    const fake = sender();
+    const portalRequest = request({
+      kind: "portal_link",
+      subject: "Portal access",
+      text: "Open https://klikframe.test/portal?t=abc123 to continue.",
+      html: "<a href=\"https://klikframe.test/portal?t=abc123\">Continue</a>",
+    });
+    await fake.send(portalRequest);
+    // The capture must retain the BODY, not just delivery metadata —
+    // documented portal-flow tests pull the real link/token from it.
+    expect(fake.findRequestByDedupeKey(portalRequest.dedupeKey)?.text).toContain(
+      "https://klikframe.test/portal?t=abc123",
+    );
+    expect(fake.findRequestByDedupeKey(portalRequest.dedupeKey)?.html).toContain("abc123");
+    expect(fake.findByDedupeKey(portalRequest.dedupeKey)?.kind).toBe("portal_link");
+  });
+
+
+  it("returns undefined for unknown dedupe keys in the content accessor", async () => {
+    const fake = sender();
+    await fake.send(request());
+    expect(fake.findRequestByDedupeKey("nope")).toBeUndefined();
+  });
 });
 
 describe("FakeEmailSender — deterministic failure injection", () => {

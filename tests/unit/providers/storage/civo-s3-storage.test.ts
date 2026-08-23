@@ -5,10 +5,20 @@ import { FixedClock } from "../../../../lib/shared/clock";
 import { resetEnvCacheForTests } from "../../../../lib/config/env";
 import { CivoS3Storage } from "../../../../lib/providers/storage/civo-s3-storage";
 
-// Mock the presigner so presign paths run offline with a fixed URL.
+// Mock the presigner so presign paths run offline with a fixed URL. The
+// options argument is captured so tests can assert the expiresIn clamp
+// and the signed-header set the adapter passes to the SDK.
+const getSignedUrlMock = vi.hoisted(() => ({
+  current: undefined as { readonly expiresIn: number; readonly signableHeaders?: ReadonlySet<string> } | undefined,
+}));
 vi.mock("@aws-sdk/s3-request-presigner", () => ({
-  getSignedUrl: vi.fn(async (): Promise<string> => {
+  getSignedUrl: vi.fn(async (
+    _client: unknown,
+    _command: unknown,
+    options?: { readonly expiresIn: number; readonly signableHeaders?: ReadonlySet<string> },
+  ): Promise<string> => {
     await Promise.resolve();
+    getSignedUrlMock.current = options;
     return "https://signed.example/put-or-get";
   }),
 }));
@@ -60,11 +70,15 @@ function envS3(): void {
 }
 
 describe("CivoS3Storage configuration contract", () => {
-  it("fails construction without S3_BUCKET/S3_ENDPOINT", () => {
+  it("labels missing S3_BUCKET/S3_ENDPOINT as a configure operation", () => {
     delete process.env.S3_BUCKET;
     delete process.env.S3_ENDPOINT;
     resetEnvCacheForTests();
-    expect(() => new CivoS3Storage({ clock: new FixedClock(BASE) })).toThrow(/S3_BUCKET/);
+    // Configuration failures must not be misattributed to a runtime
+    // "head" call in telemetry (cubic bh9oM).
+    expect(() => new CivoS3Storage({ clock: new FixedClock(BASE) })).toThrow(
+      expect.objectContaining({ kind: "permanent", provider: "storage", operation: "configure" }),
+    );
     envS3();
   });
 
@@ -137,6 +151,11 @@ describe("CivoS3Storage presign paths (vi.mock presigner)", () => {
     expect(outcome.url).toBe("https://signed.example/put-or-get");
     expect(outcome.requiredHeaders["content-type"]).toBe("image/jpeg");
     expect(outcome.expiresAt.getTime()).toBe(BASE.getTime() + MAX_UPLOAD_TTL_MS);
+    // The signature must cover the content type and use the full upload
+    // TTL — a regression dropping signableHeaders or weakening the clamp
+    // fails here.
+    expect(getSignedUrlMock.current?.expiresIn).toBe(Math.floor(MAX_UPLOAD_TTL_MS / 1000));
+    expect(getSignedUrlMock.current?.signableHeaders?.has("content-type")).toBe(true);
   });
 
   it("presignDownload clamps oversized expiry and returns the signed URL", async () => {
@@ -149,6 +168,10 @@ describe("CivoS3Storage presign paths (vi.mock presigner)", () => {
     });
     expect(outcome.url).toBe("https://signed.example/put-or-get");
     expect(outcome.expiresAt.getTime()).toBe(BASE.getTime() + MAX_DOWNLOAD_TTL_MS);
+
+    // The SDK call must carry the CLAMPED expiry (900s), not the requested
+    // hour-long one — the signed URL and expiresAt must agree.
+    expect(getSignedUrlMock.current?.expiresIn).toBe(MAX_DOWNLOAD_TTL_MS / 1000);
   });
 
   it("maps timeout-shaped SDK failures to timeout-kind provider errors", async () => {
@@ -175,5 +198,84 @@ describe("CivoS3Storage presign paths (vi.mock presigner)", () => {
     expect(result.sizeBytes).toBe(2048);
     expect(result.contentType).toBe("image/jpeg");
     expect(result.checksumSha256).toBe("ab".repeat(32));
+  });
+});
+
+describe("CivoS3Storage — s3Error classification branches", () => {
+  function storageThrowing(thrower: () => never): CivoS3Storage {
+    const client = {
+      send: async () => {
+        await Promise.resolve();
+        return thrower();
+      },
+    } as unknown as S3Client;
+    envS3();
+    return new CivoS3Storage({ clock: new FixedClock(BASE), client });
+  }
+
+  it("maps HTTP 503 service exceptions to retryable", async () => {
+    const storage = storageThrowing(() => {
+      throw Object.assign(new Error("Service Unavailable"), {
+        name: "InternalServerError",
+        $metadata: { httpStatusCode: 503 },
+      });
+    });
+    await expect(storage.head("ws_1/x")).rejects.toMatchObject({
+      kind: "retryable",
+      isRetryable: true,
+    });
+  });
+
+  it("maps HTTP 429 throttling to retryable", async () => {
+    const storage = storageThrowing(() => {
+      throw Object.assign(new Error("Slow down"), {
+        name: "TooManyRequestsException",
+        $metadata: { httpStatusCode: 429 },
+      });
+    });
+    await expect(storage.head("ws_1/x")).rejects.toMatchObject({ kind: "retryable" });
+  });
+
+  it("maps HTTP 408/504 to timeout", async () => {
+    const storage = storageThrowing(() => {
+      throw Object.assign(new Error("Gateway timeout"), {
+        name: "GatewayTimeout",
+        $metadata: { httpStatusCode: 504 },
+      });
+    });
+    await expect(storage.head("ws_1/x")).rejects.toMatchObject({ kind: "timeout" });
+  });
+
+  it("leaves 4xx without metadata as permanent", async () => {
+    const storage = storageThrowing(() => {
+      throw Object.assign(new Error("AccessDenied"), {
+        name: "AccessDenied",
+        $metadata: { httpStatusCode: 403 },
+      });
+    });
+    await expect(storage.head("ws_1/x")).rejects.toMatchObject({ kind: "permanent" });
+  });
+
+  it("fails construction when credentials are missing", () => {
+    process.env.S3_BUCKET = "klikframe-test-bucket";
+    process.env.S3_ENDPOINT = "https://objectstore.mum1.civo.com";
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    resetEnvCacheForTests();
+    expect(() => new CivoS3Storage({ clock: new FixedClock(BASE) })).toThrow(
+      /AWS_ACCESS_KEY_ID/,
+    );
+    envS3();
+  });
+
+  it("treats a delete failure like any other SDK fault (sanitized)", async () => {
+    const storage = storageThrowing(() => {
+      throw Object.assign(new Error("boom"), { name: "InternalError", $metadata: { httpStatusCode: 500 } });
+    });
+    await expect(storage.delete("ws_2/y")).rejects.toMatchObject({
+      kind: "retryable",
+      provider: "storage",
+      operation: "delete",
+    });
   });
 });

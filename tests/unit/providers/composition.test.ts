@@ -14,6 +14,8 @@ function envAll(): void {
   process.env.RESEND_FROM_EMAIL = "no-reply@" + "klikframe.test";
   process.env.ABLY_API_KEY = "app.placeholder:" + "placeholder-secret";
   process.env.NEON_AUTH_BASE_URL = "https://auth.example-neon.test";
+  process.env.AWS_ACCESS_KEY_ID = "AKIA" + "IOSFODNN7" + "EXAMPLE";
+  process.env.AWS_SECRET_ACCESS_KEY = "test-secret-" + "key-not-real";
   process.env.S3_ENDPOINT = "https://objectstore.mum1.civo.com";
   process.env.S3_BUCKET = "klikframe-test-bucket";
   resetEnvCacheForTests();
@@ -61,5 +63,20 @@ describe("provider composition", () => {
     await expect(
       port.resolveSession(new Request("https://app.example.com/")),
     ).resolves.toEqual({ kind: "unauthenticated" });
+  });
+
+  it("caches the identity adapter outside test runtime — one shared instance", async () => {
+    envAll();
+    (process.env as Record<string, string | undefined>).NODE_ENV = "development";
+    resetEnvCacheForTests();
+    const { wireIdentitySessionPort } = await import("../../../lib/providers/composition");
+    const { getIdentitySessionPort } = await import("../../../lib/auth/server");
+    // Cold-start paths (route modules, middleware) may all call this; the
+    // real adapter must be constructed ONCE, not rebuilt per call.
+    wireIdentitySessionPort();
+    const first = getIdentitySessionPort();
+    wireIdentitySessionPort();
+    expect(getIdentitySessionPort()).toBe(first);
+    expect(first.constructor.name).toBe("NeonAuthAdapter");
   });
 });

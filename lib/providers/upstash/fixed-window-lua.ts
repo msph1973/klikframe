@@ -7,30 +7,34 @@
  *
  * Contract (identical to `FakeRateLimiter`):
  * - Window index = floor(now / windowSeconds); bucket key `<key>:<index>`.
- * - Every window is INCREMENTED in this one call; no rollback of windows
- *   that passed when another window was already exhausted.
- * - Returns exactly one usage row per input window: <used> (0 when the
- *   window was full and not incremented).
+ * - Every window is INCREMENTED in this one call; a window that is already
+ *   full is rolled back to its limit and reported as the sentinel `0`
+ *   (a granted row is always >= 1, so 0 is unambiguous).
+ * - Returns exactly one usage row per input window in input order:
+ *   <used> for granted windows (1..limit), 0 for full windows.
  *
- * KEYS/ARGV layout (numkeys is implicit in the triplet count):
+ * KEYS/ARGV layout (the REST adapter passes numkeys=0, so every input
+ * arrives as ARGV):
  *   ARGV[1] = now, whole seconds
- *   then per window i: ARGV[2i] = key, ARGV[2i+1] = limit,
- *                      ARGV[2i+2] = window seconds
+ *   then per window i (i = 0..N-1):
+ *     ARGV[2 + i*3] = key, ARGV[3 + i*3] = limit,
+ *     ARGV[4 + i*3] = window seconds
  */
 export const UPSTASH_SCRIPT_KEYS = 0;
 
 export const FIXED_WINDOW_MULTI_LUA = `
 local now = tonumber(ARGV[1])
 local results = {}
-for i = 0, #KEYS - 1 do
-  local key = KEYS[i + 1]
-  local limit = tonumber(ARGV[2 + i * 3])
-  local window_seconds = tonumber(ARGV[3 + i * 3])
+local window_count = (#ARGV - 1) / 3
+for i = 0, window_count - 1 do
+  local key = ARGV[2 + i * 3]
+  local limit = tonumber(ARGV[3 + i * 3])
+  local window_seconds = tonumber(ARGV[4 + i * 3])
   local index = math.floor(now / window_seconds)
   local bucket = key .. ":" .. tostring(index)
   local used = tonumber(redis.call("INCR", bucket))
   if used == 1 then
-    redis.call("PEXPIRE", bucket, window_seconds * 2000 + 1000)
+    redis.call("PEXPIRE", bucket, window_seconds * 1000 + 1000)
   end
   if used > limit then
     redis.call("DECR", bucket)

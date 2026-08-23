@@ -26,12 +26,12 @@ export default defineConfig({
       include: ["lib/**/*.ts"],
       exclude: [
         "lib/**/*.d.ts",
-        // TESTING.md §2.2 provider-boundary rationale: frozen ports and
-        // barrels are pure-type re-export surface (no runtime branches);
-        // their adapters and fakes carry the tested logic.
-        "lib/realtime/realtime-port.ts",
-        "lib/providers/email/email-port.ts",
-        "lib/providers/storage/storage-types.ts",
+        // Only genuine barrels are excluded (no executable statements).
+        // Port/type modules with runtime branches — e.g.
+        // lib/realtime/realtime-port.ts (assertRealtimeTokenTtl),
+        // lib/providers/storage/storage-types.ts (storageProviderError) —
+        // stay IN so v8 counts their untested branches against thresholds
+        // (TESTING.md §2.1).
         "lib/providers/index.ts",
       ],
       // TESTING.md §2.1: >=90% branch coverage for idempotency (and, in

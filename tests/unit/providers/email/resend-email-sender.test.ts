@@ -39,6 +39,7 @@ describe("ResendEmailSender contract (injected fetch)", () => {
     expect(record.messageId).toBe("msg_123");
     expect(record.kind).toBe("contract_delivery");
     expect(record.sentAt.getTime()).toBe(BASE.getTime());
+    expect(bodies).toHaveLength(1);
     const body = bodies[0] as Record<string, unknown>;
     // From comes from canonical env; recipient and content from the request.
     expect(body.from).toBe("no-reply@klikframe.test");
@@ -83,5 +84,45 @@ describe("ResendEmailSender contract (injected fetch)", () => {
         kind: "portal_link",
       }),
     ).rejects.toMatchObject({ kind: "malformed_response", provider: "resend" });
+  });
+  it("aborts a stalled response under the deadline and maps it to timeout", async () => {
+    envResend();
+    let call = 0;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      call += 1;
+      if (call === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new Error("This operation was aborted"));
+          });
+        });
+      }
+      // Recovery mode: respond normally so the queue proves it unwedged.
+      return new Response(JSON.stringify({ id: "msg_ok" }), { status: 200 });
+    }) as typeof fetch;
+    const sender = new ResendEmailSender({
+      clock: new FixedClock(BASE),
+      fetchImpl,
+      timeoutMs: 25,
+    });
+    await expect(
+      sender.send({
+        to: "client@example.com",
+        subject: "s",
+        text: "t",
+        dedupeKey: "k3",
+        kind: "portal_link",
+      }),
+    ).rejects.toMatchObject({ kind: "timeout", isRetryable: true });
+    // A timed-out send must not wedge the serialized queue: the next
+    // message still delivers.
+    const recovered = await sender.send({
+      to: "client@example.com",
+      subject: "s",
+      text: "t",
+      dedupeKey: "k4",
+      kind: "portal_link",
+    });
+    expect(recovered.messageId).toBe("msg_ok");
   });
 });

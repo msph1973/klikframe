@@ -6,7 +6,7 @@
  */
 import { ProviderError } from "@/lib/shared/provider-error";
 
-export type StorageOperation = "presignUpload" | "presignDownload" | "head" | "delete";
+export type StorageOperation = "configure" | "presignUpload" | "presignDownload" | "head" | "delete";
 export interface PresignUploadOutcome {
   readonly kind: "success";
   readonly method: "PUT";

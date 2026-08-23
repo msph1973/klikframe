@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FixedClock } from "../../../lib/shared/clock";
 import { resetEnvCacheForTests } from "../../../lib/config/env";
 import { AblyRestPublisher, AblyTokenIssuer } from "../../../lib/providers/realtime/ably-adapter";
@@ -94,7 +94,95 @@ describe("AblyRestPublisher contract (injected fetch)", () => {
       ),
     ).rejects.toMatchObject({ kind: "retryable", isRetryable: true });
   });
+
+  it("maps HTTP 429 rate limiting to a retryable fault, not permanent", async () => {
+    envAbly();
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      return new Response("rate limited", { status: 429 });
+    }) as typeof fetch;
+    const publisher = new AblyRestPublisher({ clock: new FixedClock(BASE), fetchImpl });
+    await expect(
+      publisher.publish(
+        {
+          eventId: "e",
+          schemaVersion: 1,
+          eventType: "gallery.published",
+          resource: { type: "album", id: "a" },
+          occurredAt: BASE.toISOString(),
+        },
+        [{ kind: "workspace", workspaceId: "ws_2" }],
+      ),
+    ).rejects.toMatchObject({ kind: "retryable", isRetryable: true });
+  });
+
+  it("aborts a stalled publish and maps it to timeout", async () => {
+    envAbly();
+    // The adapter races the fetch against its own deadline; a fetch that
+    // never resolves loses the race and surfaces the timeout mapping. Use
+    // vitest fake timers so the 10s PUBLISH_TIMEOUT_MS elapses instantly.
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = (async () => {
+        await Promise.resolve();
+        return new Promise<Response>(() => undefined); // never settles
+      }) as typeof fetch;
+      const publisher = new AblyRestPublisher({ clock: new FixedClock(BASE), fetchImpl });
+      const assertion = expect(
+        publisher.publish(
+          {
+            eventId: "e",
+            schemaVersion: 1,
+            eventType: "gallery.published",
+            resource: { type: "album", id: "a" },
+            occurredAt: BASE.toISOString(),
+          },
+          [{ kind: "workspace", workspaceId: "ws_3" }],
+        ),
+      ).rejects.toMatchObject({ kind: "timeout", isRetryable: true });
+      await vi.advanceTimersByTimeAsync(10_001);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("maps an abort-signal rejection from fetch to timeout", async () => {
+    envAbly();
+    // A well-behaved fetch honors the adapter's AbortController signal:
+    // when the deadline aborts, fetch rejects with an abort error, which
+    // must map to a timeout-kind ProviderError (retryable).
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+        await Promise.resolve();
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new Error("This operation was aborted"));
+          });
+        });
+      }) as typeof fetch;
+      const publisher = new AblyRestPublisher({ clock: new FixedClock(BASE), fetchImpl });
+      const assertion = expect(
+        publisher.publish(
+          {
+            eventId: "e",
+            schemaVersion: 1,
+            eventType: "gallery.published",
+            resource: { type: "album", id: "a" },
+            occurredAt: BASE.toISOString(),
+          },
+          [{ kind: "workspace", workspaceId: "ws_3b" }],
+        ),
+      ).rejects.toMatchObject({ kind: "timeout", isRetryable: true });
+      await vi.advanceTimersByTimeAsync(10_001);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
 
 describe("AblyTokenIssuer contract", () => {
   it("issues subscribe-only token requests at the 15-minute cap", async () => {

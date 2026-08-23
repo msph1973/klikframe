@@ -1,4 +1,5 @@
 import type { Clock } from "@/lib/shared/clock";
+import { ProviderError } from "@/lib/shared/provider-error";
 import {
   assertRealtimeTokenTtl,
   deriveChannelName,
@@ -35,9 +36,14 @@ export class FakeRealtimePublisher implements RealtimePublisher {
     await Promise.resolve();
     if (this.failNextPublishes > 0) {
       this.failNextPublishes -= 1;
-      // Mirrors the real adapter's sanitized retryable fault; the caller's
-      // contract is to catch/log AFTER commit — never to roll back.
-      throw new Error("fake publish failure");
+      // Mirrors AblyRestPublisher's sanitized retryable fault so callers
+      // can exercise `ProviderError.isRetryable` against the real contract;
+      // the caller's job is catch/log AFTER commit — never rollback.
+      throw new ProviderError(
+        "retryable",
+        { provider: "ably", operation: "publish" },
+        "The realtime provider rejected the publish",
+      );
     }
     this.published.push({
       envelope,
@@ -91,7 +97,13 @@ export class FakeRealtimeTokenIssuer implements RealtimeTokenIssuer {
     if (failure && failure.remaining > 0) {
       failure.remaining -= 1;
       if (failure.remaining === 0) this.failures.shift();
-      throw new Error(`fake token failure: ${failure.kind}`);
+      // Sanitized ProviderError with the injected kind so token retry
+      // behavior is tested against the real provider contract.
+      throw new ProviderError(
+        failure.kind,
+        { provider: "ably", operation: "token" },
+        "The realtime provider rejected the token request",
+      );
     }
     const expiresAt = new Date(this.clock.now().getTime() + this.ttlMs);
     // Mandatory guard before returning any capability (frozen port rule).
@@ -109,8 +121,13 @@ export class FakeRealtimeTokenIssuer implements RealtimeTokenIssuer {
     return this;
   }
 
-  /** Makes the next `count` issuances fail with the given kind. */
+  /**
+   * Makes the next `count` issuances fail with the given kind. Non-positive
+   * counts are ignored: a zero-length entry would otherwise sit at the
+   * queue head forever and starve every later injection behind it.
+   */
   failNext(count: number, kind: "retryable" | "permanent" | "timeout"): void {
+    if (!Number.isInteger(count) || count < 1) return;
     this.failures.push({ kind, remaining: count });
   }
 }

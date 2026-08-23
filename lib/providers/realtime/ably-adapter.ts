@@ -48,6 +48,12 @@ export interface AblyAdapterOptions {
   readonly clock: Clock;
   /** Test seam: inject a fetch implementation instead of globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Hard deadline for one publish call (default 10s). A stalled request or
+   * response aborts the call and maps to `timeout` so post-commit callers
+   * reach their failure/refetch fallback promptly.
+   */
+  readonly timeoutMs?: number;
 }
 
 /** Splits `keyName:keySecret` without ever exposing the secret part. */
@@ -83,21 +89,17 @@ function publishError(kind: "retryable" | "permanent" | "timeout"): ProviderErro
   );
 }
 
-/**
- * Publishes the versioned invalidation envelope to every authorized
- * channel via `POST https://rest.ably.io/messages` (Basic auth over TLS
- * with the server-only key). The wire payload is exactly the five
- * allowlisted envelope fields — nothing else.
- */
 export class AblyRestPublisher implements RealtimePublisher {
   private readonly clock: Clock;
   private readonly credentials: { readonly keyName: string; readonly keySecret: string };
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(options: AblyAdapterOptions) {
     this.clock = options.clock;
     this.credentials = requireAblyKey("publish");
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.timeoutMs = Math.min(Math.max(1, options.timeoutMs ?? 10_000), 60_000);
   }
 
   /** Kept for symmetry with the token issuer (single clock source). */
@@ -122,20 +124,49 @@ export class AblyRestPublisher implements RealtimePublisher {
       data: payload,
     }));
 
-    let response: Response;
+    let response: Response | undefined;
     try {
-      response = await this.fetchImpl("https://rest.ably.io/messages", {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${this.credentials.keyName}:${this.credentials.keySecret}`).toString("base64")}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(messages),
-      });
-    } catch {
-      throw publishError("retryable");
+      // Bounded deadline: a stalled request or response must not hold the
+      // caller until the platform timeout — surface `timeout` promptly.
+      const controller = new AbortController();
+      // The deadline aborts the in-flight request AND races it, so even a
+      // fetch that ignores `signal` cannot hold the caller indefinitely.
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      try {
+        response = await Promise.race([
+          this.fetchImpl("https://rest.ably.io/messages", {
+            method: "POST",
+            headers: {
+              Authorization: `Basic ${Buffer.from(`${this.credentials.keyName}:${this.credentials.keySecret}`).toString("base64")}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(messages),
+            signal: controller.signal,
+          }),
+          new Promise<undefined>((resolve) => {
+            deadlineTimer = setTimeout(() => {
+              controller.abort();
+              resolve(undefined);
+            }, this.timeoutMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
+      if (response === undefined) {
+        throw publishError("timeout");
+      }
+    } catch (cause) {
+      if (cause instanceof ProviderError) throw cause;
+      throw cause instanceof Error && /abort/i.test(cause.message)
+        ? publishError("timeout")
+        : publishError("retryable");
     }
     if (!response.ok) {
+      // 429 = provider backpressure: retryable so post-commit retry
+      // handling applies; 408/504 are timeouts; other 4xx are permanent.
+      if (response.status === 429) throw publishError("retryable");
+      if (response.status === 408 || response.status === 504) throw publishError("timeout");
       throw publishError(response.status >= 500 ? "retryable" : "permanent");
     }
   }

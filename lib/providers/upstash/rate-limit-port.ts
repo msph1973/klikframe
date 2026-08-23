@@ -15,7 +15,7 @@
 export interface RateLimitWindow {
   /** Storage key for this window (already scoped by the caller, e.g. `login:<ip>`). */
   readonly key: string;
-  /** Maximum hits allowed inside one sliding-fixed window of `windowMs`. */
+  /** Maximum hits allowed inside one fixed window of `windowMs`. */
   readonly limit: number;
   /** Window duration in milliseconds. */
   readonly windowMs: number;

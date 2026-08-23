@@ -86,6 +86,9 @@ export class FakeObjectStorage {
 
   async head(key: string): Promise<HeadOutcome | { kind: "not_found" }> {
     await Promise.resolve();
+    // Mirrors the Civo adapter: unsafe keys are rejected before any lookup,
+    // so tests cannot accept keys production would refuse.
+    this.assertKey(key, "head");
     const stored = this.objects.get(key);
     // Contract: head of a nonexistent key is a typed outcome, not a throw.
     if (!stored) return { kind: "not_found" };
@@ -99,6 +102,7 @@ export class FakeObjectStorage {
 
   async delete(key: string): Promise<DeleteOutcome> {
     await Promise.resolve();
+    this.assertKey(key, "delete");
     // Idempotent by contract so orphan cleanup never needs pre-checks.
     this.objects.delete(key);
     return { kind: "deleted" };
@@ -118,7 +122,7 @@ export class FakeObjectStorage {
   }): Promise<void> {
     await Promise.resolve();
     assertUnexpired(input.outcome.url, this.clock.now().getTime(), "presignUpload");
-    if (!input.outcome.url.includes(encodeURIComponent(input.key))) {
+    if (urlKeyOf(input.outcome.url, "upload") !== input.key) {
       throw new ProviderError(
         "permanent",
         { provider: "storage", operation: "presignUpload" },
@@ -149,11 +153,10 @@ export class FakeObjectStorage {
   /** Test seam: simulates a GET against a presigned download URL. */
   async consumePresignedDownload(url: string): Promise<StoredObject & { key: string }> {
     await Promise.resolve();
-    assertUnexpired(url, this.clock.now().getTime(), "presignDownload");
-    for (const [key, stored] of this.objects) {
-      if (url.includes(encodeURIComponent(key))) {
-        return { ...stored, key };
-      }
+    const key = urlKeyOf(url, "download");
+    if (key !== null) {
+      const stored = this.objects.get(key);
+      if (stored) return { ...stored, key };
     }
     throw new ProviderError(
       "permanent",
@@ -167,7 +170,10 @@ export class FakeObjectStorage {
     return this.objects.size;
   }
 
-  private assertKey(key: string, operation: "presignUpload" | "presignDownload"): void {
+  private assertKey(
+    key: string,
+    operation: "presignUpload" | "presignDownload" | "head" | "delete",
+  ): void {
     if (!KEY_PATTERN.test(key)) {
       throw new ProviderError(
         "permanent",
@@ -186,8 +192,43 @@ function fakeUrl(operation: string, key: string, expiresAtMs: number, nonce: num
   return `https://fake-storage.internal/${operation}/${encodeURIComponent(key)}?${params.toString()}`;
 }
 
+/**
+ * Parses `<op>/<encodedKey>` out of the URL pathname; returns null when
+ * the operation segment differs or the path does not have exactly two
+ * segments. Malformed URLs surface through `assertUnexpired` first.
+ */
+function urlKeyOf(url: string, operation: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+  if (segments.length !== 2 || segments[0] !== operation) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(segments[1] ?? "");
+  } catch {
+    return null;
+  }
+}
+
 function assertUnexpired(url: string, nowMs: number, operation: string): void {
-  const expires = Number(new URL(url).searchParams.get("expires"));
+  // A structurally invalid URL must surface as the sanitized
+  // malformed_response branch, not as an unhandled TypeError from the
+  // URL constructor.
+  let expires: number;
+  try {
+    expires = Number(new URL(url).searchParams.get("expires"));
+  } catch {
+    throw new ProviderError(
+      "malformed_response",
+      { provider: "storage", operation },
+      "The storage URL is not a valid URL",
+    );
+  }
   if (!Number.isFinite(expires)) {
     throw new ProviderError(
       "malformed_response",

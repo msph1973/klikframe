@@ -92,12 +92,16 @@ describe("FakeRealtimePublisher — subscriber contract streams", () => {
     );
   });
 
-  it("failNext throws sanitized provider-style failures for outage fixtures", async () => {
+  it("failNext throws sanitized retryable ProviderError for outage fixtures", async () => {
     const publisher = new FakeRealtimePublisher(new FixedClock(BASE));
     publisher.failNext(1);
     await expect(
       publisher.publish(envelope("invoice.updated"), [{ kind: "workspace", workspaceId: "ws_1" }]),
-    ).rejects.toThrow("fake publish failure");
+    ).rejects.toMatchObject({
+      kind: "retryable",
+      provider: "ably",
+      isRetryable: true,
+    });
     // Not recorded; next publish succeeds.
     await publisher.publish(envelope("invoice.updated"), [{ kind: "workspace", workspaceId: "ws_1" }]);
     expect(publisher.messages).toHaveLength(1);
@@ -131,12 +135,16 @@ describe("FakeRealtimeTokenIssuer — capability contract", () => {
     ).rejects.toBeInstanceOf(RangeError);
   });
 
-  it("supports failure injection for token-outage fixtures", async () => {
+  it("supports failure injection with the real ProviderError contract", async () => {
     const issuer = new FakeRealtimeTokenIssuer(new FixedClock(BASE));
     issuer.failNext(1, "timeout");
-    await expect(issuer.issueCapability({ kind: "workspace", workspaceId: "ws_1" })).rejects.toThrow(
-      "fake token failure: timeout",
-    );
+    // The injected kind drives the sanitized ProviderError, so callers see
+    // exactly what AblyRestPublisher/AblyTokenIssuer would surface.
+    await expect(issuer.issueCapability({ kind: "workspace", workspaceId: "ws_1" })).rejects.toMatchObject({
+      kind: "timeout",
+      provider: "ably",
+      isRetryable: true,
+    });
     const recovered = await issuer.issueCapability({ kind: "workspace", workspaceId: "ws_1" });
     expect(recovered.subscribeOnly).toBe(true);
   });

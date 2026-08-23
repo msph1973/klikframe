@@ -93,7 +93,7 @@ describe("Upstash REST adapter — additional contract branches", () => {
       await Promise.resolve();
       call += 1;
       if (call === 1) return new Response(JSON.stringify({ result: "sha2" }), { status: 200 });
-      return new Response(JSON.stringify({ result: [5] }), { status: 200 });
+      return new Response(JSON.stringify({ result: [0] }), { status: 200 });
     }) as typeof fetch;
     const limiter = new UpstashRestRateLimiter(new FixedClock(BASE), { fetchImpl });
     const result = await limiter.limit([{ key: "login:ip", limit: 5, windowMs: 60_000 }]);

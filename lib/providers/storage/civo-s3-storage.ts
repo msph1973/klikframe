@@ -49,13 +49,37 @@ function errorName(cause: unknown): string {
   return "";
 }
 
-function s3Error(cause: unknown, operation: Parameters<typeof storageProviderError>[0], message: string): ProviderError {
-  // Timeout-ish SDK failures surface as retryable timeouts; everything else
-  // is a permanent provider fault under the caller contract.
+function s3Error(
+  cause: unknown,
+  operation: Parameters<typeof storageProviderError>[0],
+  message: string,
+): ProviderError {
+  // Timeout-ish SDK failures surface as retryable timeouts; throttling and
+  // service outages stay retryable so post-commit callers can re-run; the
+  // remainder is a permanent provider fault under the caller contract.
   if (/Timeout|AbortError|NetworkingError/i.test(errorName(cause))) {
     return new ProviderError("timeout", { provider: "storage", operation }, message, { cause });
   }
+  const status = httpStatusOf(cause);
+  if (status === 408 || status === 504) {
+    return new ProviderError("timeout", { provider: "storage", operation }, message, { cause });
+  }
+  if (status === 429 || (status !== null && status >= 500)) {
+    return new ProviderError("retryable", { provider: "storage", operation }, message, { cause });
+  }
   return storageProviderError(operation, message, cause);
+}
+
+/** Extracts `$metadata.httpStatusCode` from an SDK service exception. */
+function httpStatusOf(cause: unknown): number | null {
+  if (cause !== null && typeof cause === "object" && "$metadata" in cause) {
+    const metadata: unknown = cause.$metadata;
+    if (metadata !== null && typeof metadata === "object" && "httpStatusCode" in metadata) {
+      const status: unknown = metadata.httpStatusCode;
+      if (typeof status === "number") return status;
+    }
+  }
+  return null;
 }
 
 export class CivoS3Storage implements ObjectStorage {
@@ -69,8 +93,16 @@ export class CivoS3Storage implements ObjectStorage {
     const bucket = env.S3_BUCKET;
     if (!bucket || !env.S3_ENDPOINT) {
       throw storageProviderError(
-        "head",
+        "configure",
         "S3_BUCKET and S3_ENDPOINT must be configured for the storage adapter",
+      );
+    }
+    // Fail fast on missing credentials: an S3Client with empty keys would
+    // accept every local call and then fail obscurely at Civo per request.
+    if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
+      throw storageProviderError(
+        "configure",
+        "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured for the storage adapter",
       );
     }
     this.bucket = bucket;
@@ -80,10 +112,10 @@ export class CivoS3Storage implements ObjectStorage {
         region: env.AWS_REGION ?? "us-east-1",
         endpoint: env.S3_ENDPOINT,
         forcePathStyle: true,
-        credentials:
-          env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY
-            ? { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY }
-            : { accessKeyId: "", secretAccessKey: "" },
+        credentials: {
+          accessKeyId: env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        },
       });
   }
 
@@ -105,10 +137,17 @@ export class CivoS3Storage implements ObjectStorage {
     });
     try {
       // The signature covers the content type so an altered header set fails
-      // server-side at Civo exactly like finalize verification would.
+      // server-side at Civo exactly like finalize verification would. The
+      // checksum header must stay a SIGNED HEADER: the SDK's default
+      // "hoisting" moves x-amz-* into the query string and signs that form,
+      // which then breaks when the browser sends the same name as a header
+      // (Civo answers with a signature error). `unhoistableHeaders` keeps it
+      // in the header set the URL was signed for.
+      const checksumHeader = Buffer.from(request.checksumSha256, "hex").toString("base64");
       const url = await getSignedUrl(this.client, command, {
         expiresIn: Math.floor(MAX_UPLOAD_TTL_MS / 1000),
-        signableHeaders: new Set(["content-type"]),
+        signableHeaders: new Set(["content-type", "x-amz-checksum-sha256"]),
+        unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
       });
       return {
         kind: "success",
@@ -116,7 +155,9 @@ export class CivoS3Storage implements ObjectStorage {
         url,
         requiredHeaders: {
           "content-type": request.contentType,
-          "x-amz-checksum-sha256": request.checksumSha256,
+          // S3 expects base64 here — the exact value registered on the
+          // command and covered by the signature.
+          "x-amz-checksum-sha256": checksumHeader,
         },
         expiresAt: new Date(this.clock.now().getTime() + MAX_UPLOAD_TTL_MS),
       };
@@ -150,7 +191,12 @@ export class CivoS3Storage implements ObjectStorage {
   async head(key: string): Promise<HeadOutcome | { kind: "not_found" }> {
     this.assertKey(key, "head");
     try {
-      const output = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      // ChecksumMode asks Civo to return the stored checksum so finalize
+      // verification can actually compare it; without it the header is
+      // absent and every valid object would report checksumSha256: null.
+      const output = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key, ChecksumMode: "ENABLED" }),
+      );
       return {
         kind: "found",
         sizeBytes: output.ContentLength ?? 0,

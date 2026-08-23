@@ -35,6 +35,12 @@ export interface ResendEmailSenderOptions {
   readonly clock: Clock;
   /** Test seam: inject a fetch implementation instead of globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Hard deadline for one provider call (default 10s, capped at 60s).
+   * A stalled request/response aborts and maps to `timeout` so the
+   * serialized send queue never wedges behind a single hung send.
+   */
+  readonly timeoutMs?: number;
 }
 
 export class ResendEmailSender implements EmailSender {
@@ -42,6 +48,7 @@ export class ResendEmailSender implements EmailSender {
   private readonly apiKey: string;
   private readonly fromEmail: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
   /**
    * Sends are queued and flushed sequentially so concurrent callers cannot
    * interleave provider calls; the queue also gives tests a deterministic
@@ -62,6 +69,9 @@ export class ResendEmailSender implements EmailSender {
     this.apiKey = env.RESEND_API_KEY;
     this.fromEmail = env.RESEND_FROM_EMAIL;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    // A stalled request or response must never block the serialized send
+    // queue indefinitely: every deliver() runs under a hard deadline.
+    this.timeoutMs = Math.min(Math.max(1, options.timeoutMs ?? 10_000), 60_000);
   }
 
   send(request: SendEmailRequest): Promise<EmailDeliveryRecord> {
@@ -82,34 +92,79 @@ export class ResendEmailSender implements EmailSender {
       () => undefined,
     );
   }
-
   private async deliver(request: SendEmailRequest): Promise<EmailDeliveryRecord> {
-    let response: Response;
+    let response: Response | undefined;
+    // Set when the deadline wins the race; read in the catch below to
+    // classify the failure as `timeout` rather than a generic outage.
+    let timedOut = false;
+    let deadlineTimer: NodeJS.Timeout | undefined;
     try {
-      response = await this.fetchImpl("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: this.fromEmail,
-          to: [request.to],
-          subject: request.subject,
-          text: request.text,
-          ...(request.html === undefined ? {} : { html: request.html }),
-          ...(request.attachments === undefined
-            ? {}
-            : {
-                attachments: request.attachments.map((attachment) => ({
-                  filename: attachment.filename,
-                  content: attachment.contentBase64,
-                  content_type: attachment.contentType,
-                })),
-              }),
-        }),
+      // Bounded deadline: a stalled request or response aborts here and
+      // maps to `timeout`, so the serialized queue can never wedge behind
+      // one hung call.
+      const controller = new AbortController();
+      controller.signal.addEventListener("abort", () => {
+        timedOut = true;
       });
+      try {
+        // Race the call against the deadline: a compliant fetch rejects
+        // via `signal`, and a non-compliant one (or a stalled body) is
+        // still cut off when the timer settles the race with `undefined`.
+        response = await Promise.race([
+          this.fetchImpl("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from: this.fromEmail,
+              to: [request.to],
+              subject: request.subject,
+              text: request.text,
+              ...(request.html === undefined ? {} : { html: request.html }),
+              ...(request.attachments === undefined
+                ? {}
+                : {
+                    attachments: request.attachments.map((attachment) => ({
+                      filename: attachment.filename,
+                      content: attachment.contentBase64,
+                      content_type: attachment.contentType,
+                    })),
+                  }),
+            }),
+            signal: controller.signal,
+          }),
+          new Promise<undefined>((resolve) => {
+            deadlineTimer = setTimeout(() => {
+              resolve(undefined);
+            }, this.timeoutMs);
+          }),
+        ]);
+        if (response === undefined) {
+          timedOut = true;
+        }
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
+      if (response === undefined) {
+        // The deadline won the race — the provider never responded.
+        throw new ProviderError(
+          "timeout",
+          { provider: "resend", operation: "send" },
+          "The email provider did not respond in time",
+        );
+      }
     } catch (cause) {
+      if (cause instanceof ProviderError) throw cause;
+      if (timedOut) {
+        throw new ProviderError(
+          "timeout",
+          { provider: "resend", operation: "send" },
+          "The email provider did not respond in time",
+          { cause },
+        );
+      }
       throw new ProviderError(
         "retryable",
         { provider: "resend", operation: "send" },

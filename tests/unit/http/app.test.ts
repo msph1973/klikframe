@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../../lib/http/app";
 import { REQUEST_ID_HEADER, isValidRequestId } from "../../../lib/http/request-id";
+import { resetEnvCacheForTests } from "../../../lib/config/env";
+
+// createApp() wires the identity session port at composition time. Under
+// NODE_ENV=test the adapter factory still builds the real adapter (fresh,
+// uncached), so a minimal placeholder auth URL must be provisioned here —
+// mirroring what production provides via DEPLOYMENT.md §3.
+process.env.NEON_AUTH_BASE_URL = "https://auth.example-neon.test";
+(process.env as Record<string, string | undefined>).NODE_ENV = "test";
+resetEnvCacheForTests();
 
 describe("createApp", () => {
   it("serves a sanitized health response with no dependency detail", async () => {

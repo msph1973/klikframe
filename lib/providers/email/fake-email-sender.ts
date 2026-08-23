@@ -20,6 +20,8 @@ export type InjectedFailureKind = "retryable" | "permanent" | "malformed_respons
 
 export class FakeEmailSender implements EmailSender {
   private readonly captured: EmailDeliveryRecord[] = [];
+  /** Full requests behind each capture, index-aligned with `captured`. */
+  private readonly capturedRequests: SendEmailRequest[] = [];
   private failureQueue: InjectedFailureKind[] = [];
 
   constructor(private readonly clock: Clock) {}
@@ -54,6 +56,7 @@ export class FakeEmailSender implements EmailSender {
       dedupeKey: request.dedupeKey,
       sentAt: this.clock.now(),
     };
+    this.capturedRequests.push(request);
     this.captured.push(record);
     return record;
   }
@@ -78,9 +81,23 @@ export class FakeEmailSender implements EmailSender {
     return this.captured.find((record) => record.dedupeKey === dedupeKey);
   }
 
-  /** True when no send failed after the last injection reset. */
+  /**
+   * True while injected failures remain queued — i.e. the next sends are
+   * still scheduled to fail until the queue drains.
+   */
   get hasPendingFailures(): boolean {
     return this.failureQueue.length > 0;
+  }
+
+  /**
+   * The full `SendEmailRequest` behind a successful delivery (text/html
+   * bodies, attachments included), matched by dedupe key. Portal-flow
+   * tests extract real links/tokens from here; `deliveries` alone only
+   * carries delivery metadata.
+   */
+  findRequestByDedupeKey(dedupeKey: string): SendEmailRequest | undefined {
+    const index = this.captured.findIndex((record) => record.dedupeKey === dedupeKey);
+    return index === -1 ? undefined : this.capturedRequests[index];
   }
 
   /** Clears queued injections (between tests). */

@@ -69,33 +69,21 @@ function assertWindows(windows: readonly RateLimitWindow[], operation: string): 
     if (!Number.isInteger(window.limit) || window.limit < 1) {
       throw providerError("permanent", operation, "Rate limit window requires a positive integer limit");
     }
-    if (!Number.isInteger(window.windowMs) || window.windowMs < 1) {
-      throw providerError("permanent", operation, "Rate limit window requires a positive integer windowMs");
+    if (
+      !Number.isInteger(window.windowMs) ||
+      window.windowMs < 1000 ||
+      window.windowMs % 1000 !== 0
+    ) {
+      throw providerError(
+        "permanent",
+        operation,
+        "Rate limit window requires a whole number of seconds (windowMs must be a positive multiple of 1000)",
+      );
     }
     if (window.key.length === 0) {
       throw providerError("permanent", operation, "Rate limit window requires a non-empty key");
     }
   }
-}
-
-/** Binding window: fewest remaining slots; ties break to earliest reset. */
-function bindingOf<T extends { remaining: number; resetAtMs: number }>(
-  evaluated: readonly T[],
-): T {
-  const first = evaluated[0];
-  if (!first) {
-    throw providerError("permanent", "limit", "At least one rate limit window is required");
-  }
-  let binding = first;
-  for (const candidate of evaluated.slice(1)) {
-    if (
-      candidate.remaining < binding.remaining ||
-      (candidate.remaining === binding.remaining && candidate.resetAtMs < binding.resetAtMs)
-    ) {
-      binding = candidate;
-    }
-  }
-  return binding;
 }
 
 export class UpstashRestRateLimiter implements RateLimiter {
@@ -137,9 +125,10 @@ export class UpstashRestRateLimiter implements RateLimiter {
       String(Math.floor(nowMs / 1000)),
     ];
     for (const window of windows) {
-      // The script indexes windows in seconds; sub-second windows round up
-      // so they still gate at least one second per slot window.
-      args.push(window.key, String(window.limit), String(Math.ceil(window.windowMs / 1000)));
+      // assertWindows guarantees a whole-second windowMs, so the script's
+      // second-based indexing is exact — no rounding drift between the
+      // client-side reset math and the server-side window index.
+      args.push(window.key, String(window.limit), String(window.windowMs / 1000));
     }
 
     const raw = await this.evalScript(args);
@@ -209,7 +198,16 @@ export class UpstashRestRateLimiter implements RateLimiter {
 
   private loadScriptSha(): Promise<string> {
     this.scriptSha ??= this.loadScript();
-    return this.scriptSha;
+    const captured = this.scriptSha;
+    // A transient script-load failure must not poison the cache for the
+    // warm lifetime of the instance: drop the rejected promise so the next
+    // request retries Upstash.
+    captured.catch(() => {
+      if (this.scriptSha === captured) {
+        this.scriptSha = null;
+      }
+    });
+    return captured;
   }
 
   private async loadScript(): Promise<string> {
@@ -248,28 +246,48 @@ export class UpstashRestRateLimiter implements RateLimiter {
     nowMs: number,
   ): RateLimitResult {
     const evaluated = windows.map((window, index) => {
-      const used = usedCounts[index];
+      // The script reports a full window as the sentinel `0` (a granted
+      // row is always >= 1), so `used === 0` marks this call as blocked.
+      const blocked = (usedCounts[index] ?? 0) === 0;
+      const usedAfterCommit = blocked ? window.limit : Math.max(1, usedCounts[index] ?? 1);
       return {
         window,
-        used: used ?? 0,
-        remaining: Math.max(0, window.limit - (used ?? 0)),
-        // Mirrors the script's floor(now/windowMs) indexing in milliseconds.
+        blocked,
+        postRemaining: Math.max(0, window.limit - usedAfterCommit),
         resetAtMs: (Math.floor(nowMs / window.windowMs) + 1) * window.windowMs,
       };
     });
-    const binding = bindingOf(evaluated);
-    if (binding.remaining > 0) {
-      const tightest = evaluated.reduce((min, entry) =>
-        entry.window.limit < min.window.limit ? entry : min,
-      );
+
+    const tightest = evaluated.reduce((min, entry) =>
+      entry.window.limit < min.window.limit ? entry : min,
+    );
+
+    if (evaluated.every((entry) => !entry.blocked)) {
       return {
         success: true,
         limit: tightest.window.limit,
-        remaining: binding.remaining,
+        remaining: Math.min(...evaluated.map((entry) => entry.postRemaining)),
         // Every configured window must roll over before all counters are
         // fresh again — matches the fake's shared contract.
         resetAt: new Date(Math.max(...evaluated.map((entry) => entry.resetAtMs))),
       };
+    }
+
+    // Failure reset: the earliest instant a retry can succeed is when EVERY
+    // window left empty by this call has rolled over — windows already
+    // exhausted before it AND windows drained to zero by taking their last
+    // slot. Label the result with the window attaining that instant.
+    let binding = evaluated.find((entry) => entry.blocked || entry.postRemaining === 0);
+    if (!binding) {
+      throw providerError("permanent", "limit", "At least one rate limit window is required");
+    }
+    for (const entry of evaluated) {
+      if (
+        (entry.blocked || entry.postRemaining === 0) &&
+        entry.resetAtMs > binding.resetAtMs
+      ) {
+        binding = entry;
+      }
     }
     return {
       success: false,

@@ -1,6 +1,5 @@
 import "server-only";
-import { NeonAuthAdapter } from "@/lib/auth/neon-auth-adapter";
-import type { IdentitySessionPort } from "@/lib/auth/identity-session-port";
+import { getNeonAuthAdapter } from "@/lib/auth/neon-auth-adapter";
 import { setIdentitySessionPort } from "@/lib/auth/server";
 import { SystemClock } from "@/lib/shared/clock";
 import type { Clock } from "@/lib/shared/clock";
@@ -78,12 +77,26 @@ function buildProviders(): ProviderSet {
 
 /**
  * Wires the Neon Auth adapter into the identity composition point from
- * `lib/auth/server.ts`. Idempotent; called by server entrypoints that need
- * session resolution (`app/api/auth/[...path]/route.ts`, Hono middleware).
+ * `lib/auth/server.ts`. Idempotent; called by `createApp()` so the first
+ * served request uses real session resolution.
+ *
+ * Environment-tolerant by design: when NEON_AUTH_BASE_URL is not
+ * configured (unit tests, docs builds, offline tooling) the composition
+ * keeps lib/auth/server.ts's unauthenticated default instead of throwing,
+ * so building an app never requires provider credentials. Production
+ * deploys set the canonical env, so real wiring happens there; a missing
+ * variable in production surfaces as AUTH_REQUIRED per-request rather
+ * than a boot-time crash — the same sanitized failure shape every other
+ * adapter defers to request time.
  */
 export function wireIdentitySessionPort(): void {
-  const adapter: IdentitySessionPort = new NeonAuthAdapter();
-  setIdentitySessionPort(adapter);
+  try {
+    setIdentitySessionPort(getNeonAuthAdapter());
+  } catch (cause) {
+    // Sanitized: keep the unconfigured default port (unauthenticated for
+    // every request). Never log env values.
+    void cause;
+  }
 }
 
 /** Test-only: drops the cached provider set so the next access rebuilds. */
