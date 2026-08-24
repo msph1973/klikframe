@@ -173,6 +173,30 @@ async function recordIdempotencyRequest(
   return requireId(rows[0], "idempotency request");
 }
 
+
+
+/**
+ * Updates the stored idempotency response body in-place (same transaction)
+ * once the real IDs exist, so a replay returns the exact body the original
+ * client received — not the empty placeholder.
+ */
+export async function updateIdempotencyResponseBody(
+  tx: DbTx,
+  scope: { workspaceId: string | null; principalId: string; route: string; key: string },
+  responseBody: Record<string, unknown>,
+): Promise<void> {
+  await tx
+    .update(idempotencyRequests)
+    .set({ responseBody })
+    .where(
+      and(
+        eq(idempotencyRequests.principalId, scope.principalId),
+        eq(idempotencyRequests.route, scope.route),
+        eq(idempotencyRequests.key, scope.key),
+      ),
+    );
+}
+
 /** JSONB columns accept objects; non-object bodies are wrapped verbatim. */
 function ensureJsonRecord(body: unknown): Record<string, unknown> {
   if (typeof body === "object" && body !== null && !Array.isArray(body)) {

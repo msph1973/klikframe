@@ -5,6 +5,7 @@ import {
   WorkspaceSlugConflictError,
   runOnboardingTransaction,
   findIdempotencyRecord,
+  updateIdempotencyResponseBody,
 } from "@/lib/onboarding/onboard-owner";
 import { getDb } from "@/lib/db/client";
 import { computeCanonicalBodyHash } from "@/lib/idempotency/idempotency-port";
@@ -135,29 +136,38 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
             key: idempotencyKey,
             requestBodyHash,
             responseStatus: 201,
-            // Placeholder replaced after IDs are known below (same tx).
             responseBody: {},
             expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
             now,
           },
         });
 
-        return {
-          replayed: false,
-          result,
-          responseBody: {
-            data: {
-              profile: { id: result.profileId, display_name: parsed.data.owner_display_name },
-              business: {
-                id: result.workspaceId,
-                name: parsed.data.business_name,
-                slug: result.workspaceSlug,
-                status: result.workspaceStatus,
-              },
-              membership: { role: "owner", status: "active" },
+        const responseBody = {
+          data: {
+            profile: { id: result.profileId, display_name: parsed.data.owner_display_name },
+            business: {
+              id: result.workspaceId,
+              name: parsed.data.business_name,
+              slug: result.workspaceSlug,
+              status: result.workspaceStatus,
             },
+            membership: { role: "owner", status: "active" },
           },
         };
+        // Update the stored idempotency body in-place (same transaction)
+        // so a replay returns the exact body the original client received.
+        await updateIdempotencyResponseBody(
+          tx,
+          {
+            workspaceId: result.workspaceId,
+            principalId: session.session.identity.authUserId,
+            route: "/api/v1/onboarding",
+            key: idempotencyKey,
+          },
+          responseBody,
+        );
+
+        return { replayed: false, responseBody };
       });
 
       if (result.replayed) {
@@ -166,7 +176,6 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
         c.header("Idempotency-Replayed", "true");
         return c.json(result.stored as Record<string, unknown>, 201);
       }
-      void result.result;
       return c.json(result.responseBody, 201);
     } catch (err) {
       if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
