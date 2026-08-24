@@ -34,7 +34,7 @@ function makeAuthenticatedPort(): IdentitySessionPort {
           issuedAt: new Date(),
           expiresAt: new Date(Date.now() + 60_000),
         },
-      }) as Promise<SessionResolution>;
+      });
     },
   };
 }
