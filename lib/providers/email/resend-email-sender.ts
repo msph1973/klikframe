@@ -31,6 +31,15 @@ function kindForStatus(status: number): ProviderErrorKind {
   return "permanent";
 }
 
+/** Parses JSON text, mapping any parse failure to `null` (malformed). */
+function jsonOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 export interface ResendEmailSenderOptions {
   readonly clock: Clock;
   /** Test seam: inject a fetch implementation instead of globalThis.fetch. */
@@ -93,71 +102,66 @@ export class ResendEmailSender implements EmailSender {
     );
   }
   private async deliver(request: SendEmailRequest): Promise<EmailDeliveryRecord> {
-    let response: Response | undefined;
-    // Set when the deadline wins the race; read in the catch below to
-    // classify the failure as `timeout` rather than a generic outage.
-    let timedOut = false;
+    let outcome: { response: Response; bodyText: string } | undefined;
+    // Set when the deadline wins the race; read in the classification
+    // below to label the failure `timeout` rather than a generic outage.
+    // Held in a box so the abort listener's write stays visible to reads
+    // after awaits.
+    const abortState = { timedOut: false };
+    const controller = new AbortController();
+    controller.signal.addEventListener("abort", () => {
+      abortState.timedOut = true;
+    });
     let deadlineTimer: NodeJS.Timeout | undefined;
     try {
-      // Bounded deadline: a stalled request or response aborts here and
-      // maps to `timeout`, so the serialized queue can never wedge behind
-      // one hung call.
-      const controller = new AbortController();
-      controller.signal.addEventListener("abort", () => {
-        timedOut = true;
-      });
-      try {
-        // Race the call against the deadline: a compliant fetch rejects
-        // via `signal`, and a non-compliant one (or a stalled body) is
-        // still cut off when the timer settles the race with `undefined`.
-        response = await Promise.race([
-          this.fetchImpl("https://api.resend.com/emails", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${this.apiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              from: this.fromEmail,
-              to: [request.to],
-              subject: request.subject,
-              text: request.text,
-              ...(request.html === undefined ? {} : { html: request.html }),
-              ...(request.attachments === undefined
-                ? {}
-                : {
-                    attachments: request.attachments.map((attachment) => ({
-                      filename: attachment.filename,
-                      content: attachment.contentBase64,
-                      content_type: attachment.contentType,
-                    })),
-                  }),
-            }),
-            signal: controller.signal,
+      // Bounded deadline covering BOTH phases of the provider call: the
+      // request/response round trip AND the body read. A compliant fetch
+      // rejects via `signal` in either phase; a non-compliant one (or a
+      // stalled body) is still cut off when the timer settles the race
+      // with `undefined` — so the serialized send queue can never wedge
+      // behind one hung call.
+      outcome = await Promise.race([
+        this.fetchImpl("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: this.fromEmail,
+            to: [request.to],
+            subject: request.subject,
+            text: request.text,
+            ...(request.html === undefined ? {} : { html: request.html }),
+            ...(request.attachments === undefined
+              ? {}
+              : {
+                  attachments: request.attachments.map((attachment) => ({
+                    filename: attachment.filename,
+                    content: attachment.contentBase64,
+                    content_type: attachment.contentType,
+                  })),
+                }),
           }),
-          new Promise<undefined>((resolve) => {
-            deadlineTimer = setTimeout(() => {
-              resolve(undefined);
-            }, this.timeoutMs);
-          }),
-        ]);
-        if (response === undefined) {
-          timedOut = true;
-        }
-      } finally {
-        clearTimeout(deadlineTimer);
-      }
-      if (response === undefined) {
-        // The deadline won the race — the provider never responded.
-        throw new ProviderError(
-          "timeout",
-          { provider: "resend", operation: "send" },
-          "The email provider did not respond in time",
-        );
-      }
+          signal: controller.signal,
+        }).then(async (settled) => {
+          // The Response arriving does NOT end the race: keep it pending
+          // until the body text is consumed, so a stalled body stays under
+          // the same deadline and abort signal. The buffered text travels
+          // with the response — the stream cannot be read twice.
+          const bodyText = await settled.text();
+          return { response: settled, bodyText };
+        }),
+        new Promise<undefined>((resolve) => {
+          deadlineTimer = setTimeout(() => {
+            controller.abort();
+            resolve(undefined);
+          }, this.timeoutMs);
+        }),
+      ]);
     } catch (cause) {
       if (cause instanceof ProviderError) throw cause;
-      if (timedOut) {
+      if (abortState.timedOut) {
         throw new ProviderError(
           "timeout",
           { provider: "resend", operation: "send" },
@@ -171,19 +175,33 @@ export class ResendEmailSender implements EmailSender {
         "The email provider is unreachable",
         { cause },
       );
+    } finally {
+      clearTimeout(deadlineTimer);
     }
-    this.assertApiKeyNotRejected(response.status);
-
-    if (!response.ok) {
+    if (outcome === undefined || abortState.timedOut) {
+      // The deadline won the race (or the fetch rejected on abort) — the
+      // provider did not answer within the budget.
       throw new ProviderError(
-        kindForStatus(response.status),
+        "timeout",
         { provider: "resend", operation: "send" },
-        `The email provider rejected the send with HTTP ${String(response.status)}`,
+        "The email provider did not respond in time",
+      );
+    }
+    this.assertApiKeyNotRejected(outcome.response.status);
+
+    if (!outcome.response.ok) {
+      throw new ProviderError(
+        kindForStatus(outcome.response.status),
+        { provider: "resend", operation: "send" },
+        `The email provider rejected the send with HTTP ${String(outcome.response.status)}`,
       );
     }
 
-    const body: unknown = await response.json().catch(() => null);
-    const parsed = resendSendResponseSchema.safeParse(body);
+    // Body text was already buffered inside the raced promise. A body
+    // that never was JSON (or empty) maps to malformed_response, exactly
+    // like the pre-buffered `.json().catch(() => null)` path.
+    const parsedBody: unknown = jsonOrNull(outcome.bodyText);
+    const parsed = resendSendResponseSchema.safeParse(parsedBody);
     if (!parsed.success) {
       throw new ProviderError(
         "malformed_response",

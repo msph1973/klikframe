@@ -125,10 +125,18 @@ export class AblyRestPublisher implements RealtimePublisher {
     }));
 
     let response: Response | undefined;
+    // Set when the deadline aborts the in-flight request; read in the
+    // catch below to classify that cancellation as `timeout` even when
+    // fetch rejects with an empty-message AbortError. Held in a box so
+    // the listener's write stays visible to reads after awaits.
+    const abortState = { timedOut: false };
     try {
       // Bounded deadline: a stalled request or response must not hold the
       // caller until the platform timeout — surface `timeout` promptly.
       const controller = new AbortController();
+      controller.signal.addEventListener("abort", () => {
+        abortState.timedOut = true;
+      });
       // The deadline aborts the in-flight request AND races it, so even a
       // fetch that ignores `signal` cannot hold the caller indefinitely.
       let deadlineTimer: NodeJS.Timeout | undefined;
@@ -158,9 +166,10 @@ export class AblyRestPublisher implements RealtimePublisher {
       }
     } catch (cause) {
       if (cause instanceof ProviderError) throw cause;
-      throw cause instanceof Error && /abort/i.test(cause.message)
-        ? publishError("timeout")
-        : publishError("retryable");
+      if (abortState.timedOut || (cause instanceof Error && (cause.name === "AbortError" || /abort/i.test(cause.message)))) {
+        throw publishError("timeout");
+      }
+      throw publishError("retryable");
     }
     if (!response.ok) {
       // 429 = provider backpressure: retryable so post-commit retry

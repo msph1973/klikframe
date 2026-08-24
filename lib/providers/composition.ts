@@ -97,11 +97,11 @@ function buildProviders(): ProviderSet {
  * sanitized failure shape every other adapter defers to request time.
  */
 export function wireIdentitySessionPort(): void {
-  if (getEnv().NODE_ENV === "test") {
-    setIdentitySessionPort(getFakeIdentitySessionPort());
-    return;
-  }
   try {
+    if (getEnv().NODE_ENV === "test") {
+      setIdentitySessionPort(getFakeIdentitySessionPort());
+      return;
+    }
     setIdentitySessionPort(getNeonAuthAdapter());
   } catch (cause) {
     // Sanitized: keep the unconfigured default port (unauthenticated for

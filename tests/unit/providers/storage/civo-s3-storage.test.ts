@@ -236,14 +236,24 @@ describe("CivoS3Storage — s3Error classification branches", () => {
     await expect(storage.head("ws_1/x")).rejects.toMatchObject({ kind: "retryable" });
   });
 
-  it("maps HTTP 408/504 to timeout", async () => {
-    const storage = storageThrowing(() => {
+  it("maps HTTP 408 and 504 statuses to timeout even when the error name is not timeout-ish", async () => {
+    // Names deliberately avoid "Timeout" so ONLY the status-code branch
+    // can classify these — removing it must fail this test.
+    const storage504 = storageThrowing(() => {
       throw Object.assign(new Error("Gateway timeout"), {
-        name: "GatewayTimeout",
+        name: "AccessDenied",
         $metadata: { httpStatusCode: 504 },
       });
     });
-    await expect(storage.head("ws_1/x")).rejects.toMatchObject({ kind: "timeout" });
+    await expect(storage504.head("ws_1/x")).rejects.toMatchObject({ kind: "timeout" });
+
+    const storage408 = storageThrowing(() => {
+      throw Object.assign(new Error("Request timeout"), {
+        name: "AccessDenied",
+        $metadata: { httpStatusCode: 408 },
+      });
+    });
+    await expect(storage408.head("ws_1/x")).rejects.toMatchObject({ kind: "timeout" });
   });
 
   it("leaves 4xx without metadata as permanent", async () => {
@@ -265,6 +275,21 @@ describe("CivoS3Storage — s3Error classification branches", () => {
     expect(() => new CivoS3Storage({ clock: new FixedClock(BASE) })).toThrow(
       expect.objectContaining({ kind: "permanent", provider: "storage", operation: "configure" }),
     );
+    envS3();
+  });
+
+  it("constructs with an injected client even when AWS credentials are absent", () => {
+    // Regression for cubic PRRT_kwDOT_C_FM6biwym: an options.client is used
+    // verbatim and never reads AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, so
+    // missing credentials must not block it.
+    process.env.S3_BUCKET = "klikframe-test-bucket";
+    process.env.S3_ENDPOINT = "https://objectstore.mum1.civo.com";
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    resetEnvCacheForTests();
+    const stub = makeStubClient({});
+    const storage = new CivoS3Storage({ clock: new FixedClock(BASE), client: stub.client });
+    expect(typeof storage.head).toBe("function");
     envS3();
   });
 

@@ -103,6 +103,38 @@ describe("FakeObjectStorage — expiry enforcement", () => {
     const download = await store.presignDownload({ key: "ws_3/payment_proof/proof.jpg", expiresInMs: 5 * 60 * 1000 });
     expect(download.expiresAt.getTime()).toBe(BASE.getTime() + 5 * 60 * 1000);
   });
+
+  it("rejects an expired download URL even though the object still exists", async () => {
+    // Regression for cubic PRRT_kwDOT_C_FM6biwyg: consumePresignedDownload
+    // once matched the object BEFORE checking expiry, so a signed GET kept
+    // working after its TTL. Expiry must be enforced before lookup, exactly
+    // like S3 answering 403 for an expired signature.
+    const store = storage();
+    await store.consumePresignedUpload({
+      outcome: await store.presignUpload({
+        key: "ws_4/payment_proof/late.jpg",
+        contentType: "image/jpeg",
+        sizeBytes: 96,
+        checksumSha256: CHECKSUM,
+      }),
+      key: "ws_4/payment_proof/late.jpg",
+      sizeBytes: 96,
+      contentType: "image/jpeg",
+      checksumSha256: CHECKSUM,
+    });
+    const download = await store.presignDownload({ key: "ws_4/payment_proof/late.jpg", expiresInMs: 60_000 });
+    // Move "now" past the signed TTL; the object is still registered.
+    const lateStore = new FakeObjectStorage(
+      new FixedClock(new Date(BASE.getTime() + 60_000)),
+    );
+    // Assert on the exact expired-signature message: a mere
+    // unknown-object/permanent error must NOT satisfy this assertion, so
+    // the test fails against implementations that skip assertUnexpired.
+    await expect(lateStore.consumePresignedDownload(download.url)).rejects.toThrow(
+      "The storage URL has expired",
+    );
+    expect(store.objectCount).toBe(1);
+  });
 });
 
 describe("FakeObjectStorage — malformed URL handling", () => {

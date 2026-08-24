@@ -156,19 +156,16 @@ export class FakeObjectStorage {
    * branch (the same taxonomy the real adapter uses for unparseable
    * provider responses) instead of a raw TypeError from `new URL`
    * (cubic PRRT_kwDOT_C_FM6bh9nz); a parseable URL that references no
-   * known object stays a permanent capability error.
+   * known object stays a permanent capability error, and an expired
+   * signature is rejected before object lookup (cubic FM6biwyg).
    */
   async consumePresignedDownload(url: string): Promise<StoredObject & { key: string }> {
     await Promise.resolve();
-    try {
-      new URL(url);
-    } catch {
-      throw new ProviderError(
-        "malformed_response",
-        { provider: "storage", operation: "presignDownload" },
-        "The storage URL is not a valid URL",
-      );
-    }
+    // Expiry is checked BEFORE the URL is matched to an object: a signed
+    // capability past its TTL must be rejected even when it still names a
+    // live object, exactly like S3 answering 403 on an expired signature
+    // (cubic PRRT_kwDOT_C_FM6biwyg).
+    assertUnexpired(url, this.clock.now().getTime(), "presignDownload");
     const key = urlKeyOf(url, "download");
     if (key !== null) {
       const stored = this.objects.get(key);

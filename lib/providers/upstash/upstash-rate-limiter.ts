@@ -146,16 +146,17 @@ export class UpstashRestRateLimiter implements RateLimiter {
   private async evalScript(args: readonly string[]): Promise<unknown> {
     const sha = await this.loadScriptSha();
     let raw = await this.invokeEvalsha(sha, args);
-    // NOSCRIPT / flushed cache: load once more, then retry exactly one time.
+    // NOSCRIPT means Redis itself no longer holds the script (the only
+    // real cause is server-side eviction/cache flush). Reload it ONCE via
+    // loadScriptSha — a warm instance's cached SHA must not skip that,
+    // or the recovery EVALSHA deterministically re-fails NOSCRIPT — then
+    // retry exactly one time with the freshly returned SHA.
     if (raw !== null && typeof raw === "object" && "error" in raw) {
       const envelope = raw as UpstashEnvelope;
       if (typeof envelope.error === "string" && /noscript/i.test(envelope.error)) {
-        // The in-flight load's SHA is already known — reuse it for the
-        // single recovery EVALSHA instead of discarding it and paying for
-        // a second SCRIPT LOAD round trip (cubic FM6bh9oJ). Only a
-        // genuinely unknown SHA is evicted from the cache.
         this.scriptSha = null;
-        raw = await this.invokeEvalsha(sha, args);
+        const reloadedSha = await this.loadScriptSha();
+        raw = await this.invokeEvalsha(reloadedSha, args);
       }
     }
     const shaped = upstashEnvelopeSchema.safeParse(raw);
@@ -248,10 +249,22 @@ export class UpstashRestRateLimiter implements RateLimiter {
     nowMs: number,
   ): RateLimitResult {
     const evaluated = windows.map((window, index) => {
+      // Validate every row BEFORE interpreting it: a finite counter outside
+      // 0..window.limit is a protocol violation — mapping it to
+      // success:true with remaining:0 would let the caller proceed through
+      // an exhausted window (cubic PRRT_kwDOT_C_FM6biwyl).
+      const used = usedCounts[index] ?? Number.NaN;
+      if (!Number.isInteger(used) || used < 0 || used > window.limit) {
+        throw providerError(
+          "malformed_response",
+          "limit",
+          "Upstash rate limiter returned an invalid counter value",
+        );
+      }
       // The script reports a full window as the sentinel `0` (a granted
       // row is always >= 1), so `used === 0` marks this call as blocked.
-      const blocked = (usedCounts[index] ?? 0) === 0;
-      const usedAfterCommit = blocked ? window.limit : Math.max(1, usedCounts[index] ?? 1);
+      const blocked = used === 0;
+      const usedAfterCommit = blocked ? window.limit : used;
       return {
         window,
         blocked,

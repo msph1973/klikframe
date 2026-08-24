@@ -130,29 +130,40 @@ export class NeonAuthAdapter implements IdentitySessionPort {
       if (cause instanceof Error && cause.name === "JWTExpired") {
         return { kind: "expired" };
       }
-      // Provider faults (JWKS endpoint unavailable/malformed/timed out,
-      // or the set holds no usable key for the token) must never masquerade
-      // as a 401 for every valid session — classify them into the frozen
-      // taxonomy instead. jose surfaces remote-JWKS fetch failures as a
-      // bare TypeError; resolver-side faults use its typed JOSE hierarchy.
-      // Anything not in this list (signature/claim/structure failures) is
-      // an expected request state handled below — deliberately fail-closed.
-      const providerFault =
-        cause instanceof TypeError ||
-        cause instanceof joseErrors.JWKSNoMatchingKey ||
-        cause instanceof joseErrors.JWKSMultipleMatchingKeys ||
-        cause instanceof joseErrors.JWKSInvalid ||
-        cause instanceof joseErrors.JWKInvalid ||
-        cause instanceof joseErrors.JWKSTimeout;
-      if (providerFault) {
-        // Retryable: JWKS misses are typically rotation lag or transient
-        // network trouble, and callers already back off `isRetryable`.
+      // Provider faults must never masquerade as a 401 for every valid
+      // session — classify them into the frozen taxonomy instead. jose
+      // surfaces remote-JWKS fetch failures as a bare TypeError; resolver
+      // timeouts use JWKSTimeout. Both are transient: retryable.
+      const transientFault =
+        cause instanceof TypeError || cause instanceof joseErrors.JWKSTimeout;
+      if (transientFault) {
         throw new ProviderError(
           "retryable",
           { provider: "neon-auth", operation: "resolveSession" },
           "The identity provider's signing keys could not be verified",
           { cause },
         );
+      }
+      // A JWKS the resolver could parse but that is structurally broken —
+      // or holds multiple conflicting keys — is the provider answering
+      // garbage, not a transient outage. Retrying would 503 every request
+      // until someone intervenes; fail as malformed_response instead.
+      const malformedJwks =
+        cause instanceof joseErrors.JWKSInvalid ||
+        cause instanceof joseErrors.JWKInvalid ||
+        cause instanceof joseErrors.JWKSMultipleMatchingKeys;
+      if (malformedJwks) {
+        throw new ProviderError(
+          "malformed_response",
+          { provider: "neon-auth", operation: "resolveSession" },
+          "The identity provider returned malformed signing-key data",
+          { cause },
+        );
+      }
+      // JWKSNoMatchingKey is rotation lag on an otherwise healthy set:
+      // fail closed to unauthenticated (401 path), never a 503.
+      if (cause instanceof joseErrors.JWKSNoMatchingKey) {
+        return { kind: "unauthenticated" };
       }
       // Everything else (signature/claim/structure failures) is an
       // expected request state — unauthenticated — not a provider fault.

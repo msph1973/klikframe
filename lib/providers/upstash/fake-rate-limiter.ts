@@ -31,6 +31,14 @@ export class FakeRateLimiter implements RateLimiter {
 
     const nowMs = this.clock.now().getTime();
 
+    // Validate every window BEFORE any state changes: a later window's
+    // invalid config must not leave earlier windows' hits committed
+    // (mirrors UpstashRestRateLimiter.assertWindows and the fake's
+    // no-state-on-invalid contract).
+    for (const window of windows) {
+      this.assertWindow(window);
+    }
+
     // One sequential consume pass mirroring the Lua script line-for-line:
     // each window occurrence INCRs its bucket against the bucket's CURRENT
     // value (two windows may share one bucket when key+windowMs coincide,
@@ -41,7 +49,6 @@ export class FakeRateLimiter implements RateLimiter {
     // slot); a blocked window reports 0 — the unambiguous sentinel, since
     // a granted row can never be 0.
     const outcomes = windows.map((window) => {
-      this.assertWindow(window);
       const index = Math.floor(nowMs / window.windowMs);
       const bucketKey = `${window.key}:${String(index)}`;
       const used = this.buckets.get(bucketKey)?.get(index) ?? 0;

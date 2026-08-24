@@ -181,6 +181,44 @@ describe("AblyRestPublisher contract (injected fetch)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("maps an empty-message AbortError rejection to timeout", async () => {
+    envAbly();
+    // Regression for cubic FM6biwyo: some fetch implementations reject
+    // deadline aborts with `name: "AbortError"` and an EMPTY message —
+    // the message regex alone then misclassifies the deadline as a
+    // generic retryable outage instead of a timeout.
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+        await Promise.resolve();
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const silent = new Error("");
+            silent.name = "AbortError";
+            reject(silent);
+          });
+        });
+      }) as typeof fetch;
+      const publisher = new AblyRestPublisher({ clock: new FixedClock(BASE), fetchImpl });
+      const assertion = expect(
+        publisher.publish(
+          {
+            eventId: "e",
+            schemaVersion: 1,
+            eventType: "gallery.published",
+            resource: { type: "album", id: "a" },
+            occurredAt: BASE.toISOString(),
+          },
+          [{ kind: "workspace", workspaceId: "ws_3c" }],
+        ),
+      ).rejects.toMatchObject({ kind: "timeout", isRetryable: true });
+      await vi.advanceTimersByTimeAsync(10_001);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 

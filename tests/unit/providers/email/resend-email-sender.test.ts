@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FixedClock } from "../../../../lib/shared/clock";
 import { resetEnvCacheForTests } from "../../../../lib/config/env";
 import { ResendEmailSender } from "../../../../lib/providers/email/resend-email-sender";
@@ -124,5 +124,51 @@ describe("ResendEmailSender contract (injected fetch)", () => {
       kind: "portal_link",
     });
     expect(recovered.messageId).toBe("msg_ok");
+  });
+
+  it("keeps a stalled response BODY under the deadline and maps it to timeout", async () => {
+    envResend();
+    // Regression for cubic FM6biwyv: the Response arrives instantly but
+    // its JSON body never completes. The deadline must stay armed through
+    // body consumption — otherwise deliver() wedges the serialized queue.
+    vi.useFakeTimers();
+    let timedOut = false;
+    try {
+      const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+        await Promise.resolve();
+        // A Response whose body stream NEVER closes: response.text()
+        // inside deliver() stays pending until the deadline aborts the
+        // controller, which errors the stream and surfaces as timeout.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([123]));
+            init?.signal?.addEventListener("abort", () => {
+              timedOut = true;
+              controller.error(new Error("This operation was aborted"));
+            });
+          },
+        });
+        return new Response(body, { status: 200 });
+      }) as typeof fetch;
+      const sender = new ResendEmailSender({
+        clock: new FixedClock(BASE),
+        fetchImpl,
+        timeoutMs: 25,
+      });
+      const assertion = expect(
+        sender.send({
+          to: "client@example.com",
+          subject: "s",
+          text: "t",
+          dedupeKey: "k5",
+          kind: "portal_link",
+        }),
+      ).rejects.toMatchObject({ kind: "timeout", isRetryable: true });
+      await vi.advanceTimersByTimeAsync(30);
+      await assertion;
+      expect(timedOut).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

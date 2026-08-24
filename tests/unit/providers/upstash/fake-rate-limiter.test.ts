@@ -95,6 +95,23 @@ describe("FakeRateLimiter — atomic multi-key contract", () => {
       limiter.limit([{ key: "k", limit: 0, windowMs: 60_000 }]),
     ).rejects.toMatchObject({ kind: "permanent", provider: "upstash" });
   });
+
+  it("validates every window before committing any state", async () => {
+    // A later window's invalid config must not leave earlier windows'
+    // hits committed — the rejected request consumes no capacity
+    // (cubic FM6biwyq).
+    const { limiter } = limiterAt();
+    await expect(
+      limiter.limit([
+        { key: "first", limit: 5, windowMs: 60_000 },
+        { key: "second", limit: 5, windowMs: 1_500 },
+      ]),
+    ).rejects.toMatchObject({ kind: "permanent" });
+    // The first window was never mutated: all 5 slots remain available.
+    const after = await limiter.limit([{ key: "first", limit: 5, windowMs: 60_000 }]);
+    if (!after.success) throw new Error("expected success");
+    expect(after.remaining).toBe(4);
+  });
 });
 
 describe("FakeRateLimiter — edge branches", () => {
@@ -149,19 +166,21 @@ describe("FakeRateLimiter — edge branches", () => {
     expect(second.retryAfterMs).toBe(120_000);
   });
 
-  it("reports retryAfterMs 0 exactly at the window boundary", async () => {
-    // Exactly one full window after BASE: the fresh window admits the hit.
-    const atBoundary = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 60_000)));
-    const first = await atBoundary.limit([{ key: "edge", limit: 1, windowMs: 60_000 }]);
-    expect(first.success).toBe(true);
-
-    // One millisecond BEFORE the boundary the same single-slot window is
-    // exhausted, and a failure there must report zero remaining wait.
+  it("reports retryAfterMs 1 one millisecond before rollover", async () => {
+    // One millisecond BEFORE the boundary the single-slot window is
+    // already exhausted. For a blocked window nowMs is strictly below
+    // resetAtMs (integers), so max(0, resetAtMs - nowMs) can never be 0:
+    // the smallest possible wait is exactly 1ms.
     const justBefore = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 59_999)));
     await justBefore.limit([{ key: "edge2", limit: 1, windowMs: 60_000 }]);
     const blocked = await justBefore.limit([{ key: "edge2", limit: 1, windowMs: 60_000 }]);
     if (blocked.success) throw new Error("expected failure");
     expect(blocked.retryAfterMs).toBe(1);
+
+    // Exactly one full window after BASE the fresh window admits a hit.
+    const atBoundary = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 60_000)));
+    const first = await atBoundary.limit([{ key: "edge", limit: 1, windowMs: 60_000 }]);
+    expect(first.success).toBe(true);
   });
 
   it("records both hits when two windows share one bucket (same key and span)", async () => {

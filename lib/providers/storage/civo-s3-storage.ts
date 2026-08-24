@@ -97,26 +97,31 @@ export class CivoS3Storage implements ObjectStorage {
         "S3_BUCKET and S3_ENDPOINT must be configured for the storage adapter",
       );
     }
-    // Fail fast on missing credentials: an S3Client with empty keys would
-    // accept every local call and then fail obscurely at Civo per request.
-    if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
-      throw storageProviderError(
-        "configure",
-        "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured for the storage adapter",
-      );
-    }
     this.bucket = bucket;
-    this.client =
-      options.client ??
-      new S3Client({
+    if (options.client) {
+      // Injected clients (tests, embedders) are used verbatim; they never
+      // read the AWS_* env vars, so requiring them here would only block
+      // callers with unrelated environments (cubic PRRT_kwDOT_C_FM6biwym).
+      this.client = options.client;
+    } else {
+      // Fail fast on missing credentials when WE construct the S3Client:
+      // an instance with empty keys would accept every local call and then
+      // fail obscurely at Civo per request.
+      const accessKeyId = env.AWS_ACCESS_KEY_ID;
+      const secretAccessKey = env.AWS_SECRET_ACCESS_KEY;
+      if (!accessKeyId || !secretAccessKey) {
+        throw storageProviderError(
+          "configure",
+          "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured for the storage adapter",
+        );
+      }
+      this.client = new S3Client({
         region: env.AWS_REGION ?? "us-east-1",
         endpoint: env.S3_ENDPOINT,
         forcePathStyle: true,
-        credentials: {
-          accessKeyId: env.AWS_ACCESS_KEY_ID,
-          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
-        },
+        credentials: { accessKeyId, secretAccessKey },
       });
+    }
   }
 
   async presignUpload(request: PresignUploadRequest): Promise<PresignUploadOutcome> {

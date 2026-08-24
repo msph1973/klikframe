@@ -362,11 +362,12 @@ describe("NeonAuthAdapter provider-fault classification", () => {
     expect(providerError.message).not.toContain("fetch failed");
   });
 
-  it("raises a retryable ProviderError when the JWKS holds no key for the token's kid", async () => {
+  it("maps an unknown kid to unauthenticated (fail closed, no 503)", async () => {
     const fixture = await makeJwksFixture();
     const adapter = adapterWith(fixture.resolver);
-    // Signed with a kid the stub JWKS cannot match — the shape seen during
-    // key rotation lag; must classify as provider fault, not unauthenticated.
+    // Signed with a kid the stub JWKS cannot match — rotation lag on an
+    // otherwise healthy set fails closed to the unauthenticated path
+    // instead of a retryable 503 (cubic FM6biwyj).
     const token = await fixture.sign(
       {
         sub: "user_rotated",
@@ -377,10 +378,49 @@ describe("NeonAuthAdapter provider-fault classification", () => {
       },
       "rotated-key",
     );
+    await expect(adapter.resolveSession(requestWithToken(token))).resolves.toEqual({
+      kind: "unauthenticated",
+    });
+  });
+
+  it("maps malformed JWKS data to malformed_response instead of retryable", async () => {
+    // Regression for cubic FM6biwyt: structurally broken key material is
+    // the provider answering garbage — retrying would 503 every request.
+    for (const malformed of [
+      new joseErrors.JWKSInvalid(),
+      new joseErrors.JWKInvalid(),
+      new joseErrors.JWKSMultipleMatchingKeys(),
+    ]) {
+      const adapter = adapterWith(() => Promise.reject(malformed));
+      const fixture = await makeJwksFixture();
+      const token = await fixture.sign({
+        sub: "user_badjwks",
+        email: null,
+        iat: Math.floor(Date.now() / 1000) - 10,
+        exp: Math.floor(Date.now() / 1000) + 600,
+        iss: BASE_URL,
+      });
+      await expect(adapter.resolveSession(requestWithToken(token))).rejects.toMatchObject({
+        name: "ProviderError",
+        kind: "malformed_response",
+        isRetryable: false,
+      });
+    }
+  });
+
+  it("keeps resolver timeouts retryable (transient infrastructure fault)", async () => {
+    const adapter = adapterWith(() => Promise.reject(new joseErrors.JWKSTimeout()));
+    const fixture = await makeJwksFixture();
+    const token = await fixture.sign({
+      sub: "user_jwkstimeout",
+      email: null,
+      iat: Math.floor(Date.now() / 1000) - 10,
+      exp: Math.floor(Date.now() / 1000) + 600,
+      iss: BASE_URL,
+    });
     await expect(adapter.resolveSession(requestWithToken(token))).rejects.toMatchObject({
-      name: "ProviderError",
       kind: "retryable",
-      provider: "neon-auth",
+      isRetryable: true,
     });
   });
 
@@ -401,6 +441,7 @@ describe("NeonAuthAdapter provider-fault classification", () => {
       adapter.resolveSession(requestWithToken("not.a.jwt")),
     ).resolves.toEqual({ kind: "unauthenticated" });
   });
+
 });
 
 describe("NeonAuthAdapter instance caching", () => {

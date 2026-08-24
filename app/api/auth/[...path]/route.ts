@@ -1,3 +1,4 @@
+import { wireIdentitySessionPort } from "@/lib/providers/composition";
 import { getAuthRequestHandler } from "@/lib/auth/server";
 import {
   generateRequestId,
@@ -21,6 +22,12 @@ import {
  * correlation from provider-side logs.
  */
 async function handleAuthRequest(request: Request): Promise<Response> {
+  // Session resolution must use the real Neon adapter (or test fake) from
+  // the first served request; this route module is its own composition
+  // root and is served even when no /api/v1 route was mounted first
+  // (cubic PRRT_kwDOT_C_FM6bh9m3). Idempotent and env-tolerant.
+  wireIdentitySessionPort();
+
   const incoming = request.headers.get(REQUEST_ID_HEADER);
   const requestId = isValidRequestId(incoming) ? incoming : generateRequestId();
   const response = await getAuthRequestHandler()(withRequestIdRequestHeader(request, requestId));
