@@ -4,17 +4,17 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   DrizzleTransactionRunner,
   SERIALIZABLE_TX_CONFIG,
-  advisoryLockKeyString,
   type DbTx,
 } from "../../lib/db/transaction-runner";
 import { computeCanonicalBodyHash } from "../../lib/idempotency/idempotency-port";
 import {
-  findIdempotencyRecord,
   runOnboardingTransaction,
-  IdempotencyRaceError,
   AlreadyOnboardedRaceError,
+  findIdempotencyRecord,
   assertNotAlreadyOnboarded,
+  IdempotencyRaceError,
 } from "../../lib/onboarding/onboard-owner";
+import { advisoryLockKeyString } from "../../lib/db/advisory-lock";
 import {
   closeHarnessDb,
   createHarnessDb,
