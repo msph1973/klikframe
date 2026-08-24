@@ -7,7 +7,12 @@ import {
   type DbTx,
 } from "../../lib/db/transaction-runner";
 import { computeCanonicalBodyHash } from "../../lib/idempotency/idempotency-port";
-import { runOnboardingTransaction, type OnboardingResult } from "../../lib/onboarding/onboard-owner";
+import {
+  findIdempotencyRecord,
+  runOnboardingTransaction,
+  IdempotencyRaceError,
+  type OnboardingResult,
+} from "../../lib/onboarding/onboard-owner";
 import {
   closeHarnessDb,
   createHarnessDb,
@@ -315,4 +320,81 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     );
     expect(journal.rows[0]?.n).toBeGreaterThan(0);
   });
+
+  it("scenario 7: losing the idempotency insert race aborts with IdempotencyRaceError, then a fresh snapshot replays", async () => {
+    // PRRT_kwDOT_C_FM6bpjbA: two identical requests overlap; both observe
+    // "no committed record" before either acquires the advisory lock. The
+    // loser's idempotency insert hits the scope unique (23505) INSIDE its
+    // serializable transaction — the raw violation must never escape as a
+    // 500. The repository classifies it as IdempotencyRaceError; the route
+    // then re-runs the use case in a FRESH transaction whose new snapshot
+    // sees the winner's committed row and replays it.
+    const scopeKey = `it-race-${String(Date.now())}`;
+    const body = { business_name: "Klik Studio" };
+    const hash = computeCanonicalBodyHash(body);
+    const idempotency = {
+      workspaceId: null,
+      principalId: scopeKey,
+      route: "/api/v1/onboarding",
+      resourceId: null,
+      key: "race-key-1",
+      requestBodyHash: hash,
+      responseStatus: 201,
+      responseBody: {},
+      expiresAt: new Date(NOW.getTime() + 24 * 60 * 60 * 1000),
+      now: NOW,
+    };
+    const runner = new DrizzleTransactionRunner(requireHarness().db);
+
+    // Winner commits first (same shape the real first request takes).
+    await runner.run(async (winnerTx) => {
+      await runOnboardingTransaction(winnerTx, {
+        ...onboardInput(scopeKey, `slug-${scopeKey}`),
+        idempotency,
+      });
+    });
+
+    // observation path: in the true overlap race its replay lookup runs
+    // BEFORE the winner commits, so it misses. Drive the loser through the
+    // REAL write path (runOnboardingTransaction reaches
+    // recordIdempotencyRequest): the scope unique rejects its insert and
+    // the classification must surface as IdempotencyRaceError — never the
+    // raw 23505 as an unclassified 500.
+    let loserAborted = false;
+    try {
+      await runner.run(async (loserTx) => {
+        await runOnboardingTransaction(loserTx, {
+          ...onboardInput(scopeKey, `slug-${scopeKey}`),
+          idempotency,
+        });
+      });
+    } catch (error) {
+      if (error instanceof IdempotencyRaceError) {
+        loserAborted = true;
+      } else {
+        throw error;
+      }
+    }
+    expect(loserAborted).toBe(true);
+
+    // The route-level retry: a fresh transaction observes the winner's
+    // committed record and replays it — the exact behavior the second HTTP
+    // request must produce instead of a 500.
+    const replay = await runner.run((retryTx) =>
+      findIdempotencyRecord(retryTx, {
+        principalId: scopeKey,
+        route: "/api/v1/onboarding",
+        key: "race-key-1",
+      }),
+    );
+    expect(replay).not.toBeNull();
+    expect(replay?.requestBodyHash).toBe(hash);
+    expect(replay?.responseStatus).toBe(201);
+
+    // Exactly one business account exists — the loser stored nothing.
+    const workspaces = await requireHarness().db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM workspaces WHERE slug = ${`slug-${scopeKey}`}`,
+    );
+    expect(workspaces.rows[0]?.n).toBe(1);
+  }, 20_000);
 });

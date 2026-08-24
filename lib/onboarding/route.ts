@@ -1,25 +1,51 @@
 import { z } from "zod";
 import { getIdentitySessionPort } from "@/lib/auth/server";
 import { AppError } from "@/lib/http/errors";
+import { assertSameOrigin } from "@/lib/http/origin";
 import {
+  IdempotencyRaceError,
   WorkspaceSlugConflictError,
+  assertNotAlreadyOnboarded,
   runOnboardingTransaction,
   findIdempotencyRecord,
   updateIdempotencyResponseBody,
 } from "@/lib/onboarding/onboard-owner";
-import { getDb } from "@/lib/db/client";
+import { getProviders } from "@/lib/providers/composition";
 import { computeCanonicalBodyHash } from "@/lib/idempotency/idempotency-port";
+import { DrizzleTransactionRunner } from "@/lib/db/transaction-runner";
+import { getDb } from "@/lib/db/client";
 import type { KlikFrameApp } from "@/lib/http/app";
+
+/** Owner API shared window (API_SPEC.md §1.5): 100 requests per minute. */
+const OWNER_API_RATE_LIMIT = 100;
+const OWNER_API_WINDOW_MS = 60_000;
 
 /**
  * POST /api/v1/onboarding (API_SPEC.md §2, KF-ONB-001).
  *
  * Access: authenticated owner session WITHOUT an existing workspace.
  * Idempotency-Key header: required (API_SPEC.md §1.4).
+ *
+ * Request pipeline order (API_SPEC.md §1.5/§1.6):
+ *  1. Origin guard  — cookie-authenticated mutations verify Origin/Host
+ *     before any authenticated work (§1.6).
+ *  2. Session resolution — 401 AUTH_REQUIRED envelope.
+ *  3. Rate limit — 100/min per auth user ID, after session, before use case
+ *     (§1.5); 429 RATE_LIMITED carries Retry-After.
+ *  4. Payload parsing/validation.
  */
 export function registerOnboardingRoute(app: KlikFrameApp): void {
   app.post("/onboarding", async (c) => {
     const requestId = c.get("requestId");
+
+    // §1.6: foreign, absent, or null Origin on a cookie-authenticated
+    // mutation is rejected before session and database work.
+    try {
+      assertSameOrigin(c.req.raw);
+    } catch (error) {
+      return originDeniedResponse(error, requestId);
+    }
+
     const session = await getIdentitySessionPort().resolveSession(c.req.raw);
     const sessionExpired =
       session.kind === "expired" ||
@@ -34,6 +60,33 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
           },
         },
         401,
+      );
+    }
+
+    // §1.5: owner API limiter — Upstash-backed in every real environment,
+    // deterministic fake under test. Runs after the session exists (the key
+    // is the auth user ID) and BEFORE payload parsing/use-case work; a
+    // blocked request never reaches the database.
+    const principalId = session.session.identity.authUserId;
+    const rateLimit = await getProviders().rateLimiter.limit([
+      { key: `owner-api:${principalId}`, limit: OWNER_API_RATE_LIMIT, windowMs: OWNER_API_WINDOW_MS },
+    ]);
+    if (!rateLimit.success) {
+      return c.json(
+        {
+          error: {
+            code: "RATE_LIMITED",
+            message: "Too many requests — retry later",
+            request_id: requestId,
+          },
+        },
+        429,
+        {
+          "Retry-After": String(Math.max(1, Math.ceil(rateLimit.retryAfterMs / 1000))),
+          "RateLimit-Limit": String(rateLimit.limit),
+          "RateLimit-Remaining": String(rateLimit.remaining),
+          "RateLimit-Reset": String(Math.ceil(rateLimit.resetAt.getTime() / 1000)),
+        },
       );
     }
 
@@ -93,18 +146,36 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
       );
     }
 
+    // Precondition (API_SPEC.md §2 "owner session tanpa workspace"): reject
+    // an identity that already owns a workspace BEFORE the transaction so
+    // the second membership insert can never degrade into a generic 500 —
+    // while a valid replay of the original request still short-circuits to
+    // its stored response below (PRRT_kwDOT_C_FM6bpRIt).
+    await assertNotAlreadyOnboarded(new DrizzleTransactionRunner(getDb()), principalId);
+
+
     const now = new Date();
-
     const requestBodyHash = computeCanonicalBodyHash(parsed.data);
-
     try {
-      const result = await getDb().transaction(async (tx) => {
+      // Everything from here can fail in ways the frozen envelope maps:
+      // IDEMPOTENCY_CONFLICT, SLUG_CONFLICT, or the race-retry path below.
+      // DATABASE_SCHEMA.md §7: serializable isolation + retry-on-40001 is a
+      // property of the runner, never of ad-hoc db.transaction() calls. The
+      // retry-once wrapper below additionally covers the idempotency insert
+      // race: a loser aborts with IdempotencyRaceError and re-runs in a
+      // FRESH transaction whose snapshot can then observe the winner's
+      // committed record through the replay lookup (PRRT_kwDOT_C_FM6bpjbA).
+      const runner = new DrizzleTransactionRunner(getDb());
+      const runOnce = async (): Promise<
+        { replayed: true; stored: unknown } | { replayed: false; responseBody: Record<string, unknown> }
+      > =>
+        runner.run(async (tx) => {
         // API_SPEC.md §1.4 replay: an existing committed record for this
         // scope+key short-circuits to its stored response — but only when
         // the body hash matches; a different body with the same key is a
         // 409 IDEMPOTENCY_CONFLICT.
         const existing = await findIdempotencyRecord(tx, {
-          principalId: session.session.identity.authUserId,
+          principalId,
           route: "/api/v1/onboarding",
           key: idempotencyKey,
         });
@@ -112,12 +183,12 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
           if (existing.requestBodyHash !== requestBodyHash) {
             throw new AppError("IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used with a different request body");
           }
-          return { replayed: true, stored: existing.responseBody };
+          return { replayed: true as const, stored: existing.responseBody };
         }
 
-        const result = await runOnboardingTransaction(tx, {
+        const onboarded = await runOnboardingTransaction(tx, {
           profile: {
-            authUserId: session.session.identity.authUserId,
+            authUserId: principalId,
             displayName: parsed.data.owner_display_name,
             phoneE164: parsed.data.phone_e164 ?? null,
             now,
@@ -130,7 +201,7 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
           audit: { requestId },
           idempotency: {
             workspaceId: null,
-            principalId: session.session.identity.authUserId,
+            principalId,
             route: "/api/v1/onboarding",
             resourceId: null,
             key: idempotencyKey,
@@ -144,66 +215,103 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
 
         const responseBody = {
           data: {
-            profile: { id: result.profileId, display_name: parsed.data.owner_display_name },
+            profile: { id: onboarded.profileId, display_name: parsed.data.owner_display_name },
             business: {
-              id: result.workspaceId,
+              id: onboarded.workspaceId,
               name: parsed.data.business_name,
-              slug: result.workspaceSlug,
-              status: result.workspaceStatus,
+              slug: onboarded.workspaceSlug,
+              status: onboarded.workspaceStatus,
             },
             membership: { role: "owner", status: "active" },
           },
         };
         // Update the stored idempotency body in-place (same transaction)
         // so a replay returns the exact body the original client received.
+        // The completion scope pins resource_id NULL-aware so it can only
+        // ever touch the row this transaction inserted.
         await updateIdempotencyResponseBody(
           tx,
           {
-            workspaceId: result.workspaceId,
-            principalId: session.session.identity.authUserId,
+            workspaceId: onboarded.workspaceId,
+            principalId,
             route: "/api/v1/onboarding",
+            resourceId: null,
             key: idempotencyKey,
           },
           responseBody,
         );
 
-        return { replayed: false, responseBody };
+        return { replayed: false as const, responseBody };
       });
 
-      if (result.replayed) {
-        // API_SPEC.md §1.4: valid replay returns the stored body plus the
-        // Idempotency-Replayed marker header.
-        c.header("Idempotency-Replayed", "true");
-        return c.json(result.stored as Record<string, unknown>, 201);
+    let result;
+    try {
+      result = await runOnce();
+    } catch (error) {
+      if (!(error instanceof IdempotencyRaceError)) {
+        throw error;
       }
-      return c.json(result.responseBody, 201);
-    } catch (err) {
-      if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
-        return c.json(
-          {
-            error: {
-              code: err.code,
-              message: err.message,
-              request_id: requestId,
-            },
-          },
-          err.status,
-        );
-      }
-      if (err instanceof WorkspaceSlugConflictError) {
-        return c.json(
-          {
-            error: {
-              code: "SLUG_CONFLICT",
-              message: "This business URL is already taken",
-              request_id: requestId,
-            },
-          },
-          409,
-        );
-      }
-      throw err;
+      // Lost the insert race: one clean retry in a fresh snapshot replays
+      // the winner's response (or conflicts on a body-hash mismatch).
+      result = await runOnce();
     }
-  });
+
+    if (result.replayed) {
+      // API_SPEC.md §1.4: valid replay returns the stored body plus the
+      // Idempotency-Replayed marker header.
+      c.header("Idempotency-Replayed", "true");
+      return c.json(result.stored as Record<string, unknown>, 201);
+    }
+    return c.json(result.responseBody, 201);
+  } catch (err) {
+    if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
+      return errorEnvelope(err, requestId);
+    }
+    if (err instanceof WorkspaceSlugConflictError) {
+      return c.json(
+        {
+          error: {
+            code: "SLUG_CONFLICT",
+            message: "This business URL is already taken",
+            request_id: requestId,
+          },
+        },
+        409,
+      );
+    }
+    throw err;
+  }
+});
 }
 
+/** Builds the standard `{ error: { code, message, request_id } }` JSON response for an AppError. */
+function errorEnvelope(err: AppError, requestId: string): Response {
+  return Response.json(
+    {
+      error: {
+        code: err.code,
+        message: err.message,
+        request_id: requestId,
+      },
+    },
+    { status: err.status },
+  );
+}
+
+/** Maps an origin-guard rejection onto the frozen ORIGIN_DENIED envelope (API_SPEC.md §1.6). */
+function originDeniedResponse(error: unknown, requestId: string): Response {
+  const appError = AppError.from(error);
+  const denied = appError.code === "ORIGIN_DENIED"
+    ? appError
+    : new AppError("ORIGIN_DENIED", "Request origin is not trusted");
+  return Response.json(
+    {
+      error: {
+        code: denied.code,
+        message: denied.message,
+        request_id: requestId,
+      },
+    },
+    { status: denied.status },
+  );
+}
