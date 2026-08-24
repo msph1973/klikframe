@@ -146,172 +146,147 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
       );
     }
 
-    // Precondition (API_SPEC.md §2 "owner session tanpa workspace"): reject
-    // an identity that already owns a workspace BEFORE the transaction so
-    // the second membership insert can never degrade into a generic 500 —
-    // while a valid replay of the original request still short-circuits to
-    // its stored response below (PRRT_kwDOT_C_FM6bpRIt).
-    await assertNotAlreadyOnboarded(new DrizzleTransactionRunner(getDb()), principalId);
-
-
     const now = new Date();
     const requestBodyHash = computeCanonicalBodyHash(parsed.data);
     try {
-      // Everything from here can fail in ways the frozen envelope maps:
-      // IDEMPOTENCY_CONFLICT, SLUG_CONFLICT, or the race-retry path below.
       // DATABASE_SCHEMA.md §7: serializable isolation + retry-on-40001 is a
-      // property of the runner, never of ad-hoc db.transaction() calls. The
-      // retry-once wrapper below additionally covers the idempotency insert
-      // race: a loser aborts with IdempotencyRaceError and re-runs in a
-      // FRESH transaction whose snapshot can then observe the winner's
-      // committed record through the replay lookup (PRRT_kwDOT_C_FM6bpjbA).
+      // property of the runner. runOnce encapsulates one attempt; the
+      // retry-once wrapper covers the idempotency insert race (a loser
+      // aborts with IdempotencyRaceError and re-runs in a FRESH transaction
+      // whose snapshot observes the winner's committed record through the
+      // replay lookup).
+      //
+      // Precondition order matters (gitar-bot PRRT_kwDOT_C_FM6bsYro):
+      // assertNotAlreadyOnboarded runs INSIDE runOnce AFTER the idempotency
+      // replay lookup, so a genuine replay of the original request
+      // short-circuits to its stored 201 response first.
       const runner = new DrizzleTransactionRunner(getDb());
       const runOnce = async (): Promise<
         { replayed: true; stored: unknown } | { replayed: false; responseBody: Record<string, unknown> }
       > =>
         runner.run(async (tx) => {
-        // API_SPEC.md §1.4 replay: an existing committed record for this
-        // scope+key short-circuits to its stored response — but only when
-        // the body hash matches; a different body with the same key is a
-        // 409 IDEMPOTENCY_CONFLICT.
-        const existing = await findIdempotencyRecord(tx, {
-          principalId,
-          route: "/api/v1/onboarding",
-          key: idempotencyKey,
-        });
-        if (existing !== null) {
-          if (existing.requestBodyHash !== requestBodyHash) {
-            throw new AppError("IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used with a different request body");
+          const existing = await findIdempotencyRecord(tx, {
+            principalId,
+            route: "/api/v1/onboarding",
+            key: idempotencyKey,
+          });
+          if (existing !== null) {
+            if (existing.requestBodyHash !== requestBodyHash) {
+              throw new AppError("IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used with a different request body");
+            }
+            await assertNotAlreadyOnboarded(runner, principalId);
+            return { replayed: true as const, stored: existing.responseBody };
           }
-          return { replayed: true as const, stored: existing.responseBody };
-        }
+          await assertNotAlreadyOnboarded(runner, principalId);
 
-        const onboarded = await runOnboardingTransaction(tx, {
-          profile: {
-            authUserId: principalId,
-            displayName: parsed.data.owner_display_name,
-            phoneE164: parsed.data.phone_e164 ?? null,
-            now,
-          },
-          workspace: {
-            name: parsed.data.business_name,
-            slug: parsed.data.slug,
-            now,
-          },
-          audit: { requestId },
-          idempotency: {
-            workspaceId: null,
-            principalId,
-            route: "/api/v1/onboarding",
-            resourceId: null,
-            key: idempotencyKey,
-            requestBodyHash,
-            responseStatus: 201,
-            responseBody: {},
-            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
-            now,
-          },
+          const onboarded = await runOnboardingTransaction(tx, {
+            profile: {
+              authUserId: principalId,
+              displayName: parsed.data.owner_display_name,
+              phoneE164: parsed.data.phone_e164 ?? null,
+              now,
+            },
+            workspace: {
+              name: parsed.data.business_name,
+              slug: parsed.data.slug,
+              now,
+            },
+            audit: { requestId },
+            idempotency: {
+              workspaceId: null,
+              principalId,
+              route: "/api/v1/onboarding",
+              resourceId: null,
+              key: idempotencyKey,
+              requestBodyHash,
+              responseStatus: 201,
+              responseBody: {},
+              expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+              now,
+            },
+          });
+
+          const responseBody = {
+            data: {
+              profile: { id: onboarded.profileId, display_name: parsed.data.owner_display_name },
+              business: {
+                id: onboarded.workspaceId,
+                name: parsed.data.business_name,
+                slug: onboarded.workspaceSlug,
+                status: onboarded.workspaceStatus,
+              },
+              membership: { role: "owner", status: "active" },
+            },
+          };
+          // Update the stored idempotency body in-place (same transaction)
+          // so a replay returns the exact body the original client received.
+          // Scope pins resource_id NULL-aware so it can only ever touch the
+          // row this transaction inserted.
+          await updateIdempotencyResponseBody(
+            tx,
+            {
+              workspaceId: onboarded.workspaceId,
+              principalId,
+              route: "/api/v1/onboarding",
+              resourceId: null,
+              key: idempotencyKey,
+            },
+            responseBody,
+          );
+
+          return { replayed: false as const, responseBody };
         });
 
-        const responseBody = {
-          data: {
-            profile: { id: onboarded.profileId, display_name: parsed.data.owner_display_name },
-            business: {
-              id: onboarded.workspaceId,
-              name: parsed.data.business_name,
-              slug: onboarded.workspaceSlug,
-              status: onboarded.workspaceStatus,
-            },
-            membership: { role: "owner", status: "active" },
-          },
-        };
-        // Update the stored idempotency body in-place (same transaction)
-        // so a replay returns the exact body the original client received.
-        // The completion scope pins resource_id NULL-aware so it can only
-        // ever touch the row this transaction inserted.
-        await updateIdempotencyResponseBody(
-          tx,
-          {
-            workspaceId: onboarded.workspaceId,
-            principalId,
-            route: "/api/v1/onboarding",
-            resourceId: null,
-            key: idempotencyKey,
-          },
-          responseBody,
-        );
-
-        return { replayed: false as const, responseBody };
-      });
-
-    let result;
-    try {
-      result = await runOnce();
-    } catch (error) {
-      if (!(error instanceof IdempotencyRaceError)) {
-        throw error;
+      let result;
+      try {
+        result = await runOnce();
+      } catch (error) {
+        if (!(error instanceof IdempotencyRaceError)) {
+          throw error;
+        }
+        // Lost the insert race: one clean retry in a fresh snapshot replays
+        // the winner's response (or conflicts on a body-hash mismatch).
+        result = await runOnce();
       }
-      // Lost the insert race: one clean retry in a fresh snapshot replays
-      // the winner's response (or conflicts on a body-hash mismatch).
-      result = await runOnce();
-    }
 
-    if (result.replayed) {
-      // API_SPEC.md §1.4: valid replay returns the stored body plus the
-      // Idempotency-Replayed marker header.
-      c.header("Idempotency-Replayed", "true");
-      return c.json(result.stored as Record<string, unknown>, 201);
-    }
-    return c.json(result.responseBody, 201);
-  } catch (err) {
-    if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
-      return errorEnvelope(err, requestId);
-    }
-    if (err instanceof WorkspaceSlugConflictError) {
-      return c.json(
-        {
-          error: {
-            code: "SLUG_CONFLICT",
-            message: "This business URL is already taken",
-            request_id: requestId,
+      if (result.replayed) {
+        c.header("Idempotency-Replayed", "true");
+        return c.json(result.stored as Record<string, unknown>, 201);
+      }
+      return c.json(result.responseBody, 201);
+    } catch (err) {
+      if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
+        return errorEnvelope(err, requestId);
+      }
+      if (err instanceof WorkspaceSlugConflictError) {
+        return c.json(
+          {
+            error: {
+              code: "SLUG_CONFLICT",
+              message: "This business URL is already taken",
+              request_id: requestId,
+            },
           },
-        },
-        409,
-      );
+          409,
+        );
+      }
+      throw err;
     }
-    throw err;
-  }
-});
+  });
 }
-
 /** Builds the standard `{ error: { code, message, request_id } }` JSON response for an AppError. */
 function errorEnvelope(err: AppError, requestId: string): Response {
   return Response.json(
-    {
-      error: {
-        code: err.code,
-        message: err.message,
-        request_id: requestId,
-      },
-    },
+    { error: { code: err.code, message: err.message, request_id: requestId } },
     { status: err.status },
   );
 }
 
 /** Maps an origin-guard rejection onto the frozen ORIGIN_DENIED envelope (API_SPEC.md §1.6). */
 function originDeniedResponse(error: unknown, requestId: string): Response {
-  const appError = AppError.from(error);
-  const denied = appError.code === "ORIGIN_DENIED"
-    ? appError
-    : new AppError("ORIGIN_DENIED", "Request origin is not trusted");
+  const message = error instanceof Error ? error.message : "Origin denied";
   return Response.json(
-    {
-      error: {
-        code: denied.code,
-        message: denied.message,
-        request_id: requestId,
-      },
-    },
-    { status: denied.status },
+    { error: { code: "ORIGIN_DENIED", message, request_id: requestId } },
+    { status: 403 },
   );
 }
