@@ -1,8 +1,11 @@
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
 import { getIdentitySessionPort } from "@/lib/auth/server";
+import { AppError } from "@/lib/http/errors";
 import {
   WorkspaceSlugConflictError,
   runOnboardingTransaction,
+  findIdempotencyRecord,
 } from "@/lib/onboarding/onboard-owner";
 import { getDb } from "@/lib/db/client";
 import type { KlikFrameApp } from "@/lib/http/app";
@@ -17,12 +20,15 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
   app.post("/onboarding", async (c) => {
     const requestId = c.get("requestId");
     const session = await getIdentitySessionPort().resolveSession(c.req.raw);
-    if (session.kind !== "authenticated" || session.session.expiresAt.getTime() <= Date.now()) {
+    const sessionExpired =
+      session.kind === "expired" ||
+      (session.kind === "authenticated" && session.session.expiresAt.getTime() <= Date.now());
+    if (session.kind !== "authenticated" || sessionExpired) {
       return c.json(
         {
           error: {
             code: "AUTH_REQUIRED",
-            message: session.kind === "expired" ? "Session expired" : "Authentication required",
+            message: sessionExpired ? "Session expired" : "Authentication required",
             request_id: requestId,
           },
         },
@@ -86,17 +92,28 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
     }
 
     const now = new Date();
-    const responseBody = {
-      data: {
-        profile: { id: "", display_name: parsed.data.owner_display_name },
-        business: { id: "", name: parsed.data.business_name, slug: parsed.data.slug, status: "active" },
-        membership: { role: "owner", status: "active" },
-      },
-    };
+
+    const requestBodyHash = stableStringify(parsed.data);
 
     try {
-      const result = await getDb().transaction(async (tx) =>
-        runOnboardingTransaction(tx, {
+      const result = await getDb().transaction(async (tx) => {
+        // API_SPEC.md §1.4 replay: an existing committed record for this
+        // scope+key short-circuits to its stored response — but only when
+        // the body hash matches; a different body with the same key is a
+        // 409 IDEMPOTENCY_CONFLICT.
+        const existing = await findIdempotencyRecord(tx, {
+          principalId: session.session.identity.authUserId,
+          route: "/api/v1/onboarding",
+          key: idempotencyKey,
+        });
+        if (existing !== null) {
+          if (existing.requestBodyHash !== requestBodyHash) {
+            throw new AppError("IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used with a different request body");
+          }
+          return { replayed: true, stored: existing.responseBody };
+        }
+
+        const result = await runOnboardingTransaction(tx, {
           profile: {
             authUserId: session.session.identity.authUserId,
             displayName: parsed.data.owner_display_name,
@@ -109,40 +126,58 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
             now,
           },
           audit: { requestId },
-          // Idempotency record is persisted in the SAME transaction
-          // (API_SPEC.md §1.4). The response body hash uses the canonical
-          // payload; the stored body is filled in after the IDs are known.
           idempotency: {
             workspaceId: null,
             principalId: session.session.identity.authUserId,
             route: "/api/v1/onboarding",
             resourceId: null,
             key: idempotencyKey,
-            requestBodyHash: stableStringify(parsed.data),
+            requestBodyHash,
             responseStatus: 201,
-            responseBody,
+            // Placeholder replaced after IDs are known below (same tx).
+            responseBody: {},
             expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
             now,
           },
-        }),
-      );
+          expectedBodyHash: requestBodyHash,
+        });
 
-      return c.json(
-        {
-          data: {
-            profile: { id: result.profileId, display_name: parsed.data.owner_display_name },
-            business: {
-              id: result.workspaceId,
-              name: parsed.data.business_name,
-              slug: result.workspaceSlug,
-              status: result.workspaceStatus,
+        return {
+          replayed: false,
+          result,
+          responseBody: {
+            data: {
+              profile: { id: result.profileId, display_name: parsed.data.owner_display_name },
+              business: {
+                id: result.workspaceId,
+                name: parsed.data.business_name,
+                slug: result.workspaceSlug,
+                status: result.workspaceStatus,
+              },
+              membership: { role: "owner", status: "active" },
             },
-            membership: { role: "owner", status: "active" },
           },
-        },
-        201,
-      );
+        };
+      });
+
+      if (result.replayed) {
+        return c.json(result.stored as Record<string, unknown>, 201);
+      }
+      void result.result;
+      return c.json(result.responseBody, 201);
     } catch (err) {
+      if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
+        return c.json(
+          {
+            error: {
+              code: err.code,
+              message: err.message,
+              request_id: requestId,
+            },
+          },
+          err.status,
+        );
+      }
       if (err instanceof WorkspaceSlugConflictError) {
         return c.json(
           {

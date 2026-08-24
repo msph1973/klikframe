@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 
 import { withAdvisoryLock } from "@/lib/db/advisory-lock";
 import type { DbTx } from "@/lib/db/transaction-runner";
@@ -30,6 +31,42 @@ export interface IdempotencyRecordInput {
   readonly now: Date;
 }
 
+export interface IdempotencyReplay {
+  readonly requestBodyHash: string;
+  readonly responseStatus: number;
+  readonly responseBody: unknown;
+}
+
+/**
+ * Looks up an existing committed idempotency record for this scope+key.
+ * Returns null when no record exists (first-time request).
+ */
+export async function findIdempotencyRecord(
+  tx: DbTx,
+  scope: { principalId: string; route: string; key: string },
+): Promise<IdempotencyReplay | null> {
+  const rows = await tx
+    .select({
+      requestBodyHash: idempotencyRequests.requestBodyHash,
+      responseStatus: idempotencyRequests.responseStatus,
+      responseBody: idempotencyRequests.responseBody,
+    })
+    .from(idempotencyRequests)
+    .where(
+      and(
+        eq(idempotencyRequests.principalId, scope.principalId),
+        eq(idempotencyRequests.route, scope.route),
+        eq(idempotencyRequests.key, scope.key),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return { responseStatus: row.responseStatus, responseBody: row.responseBody, requestBodyHash: row.requestBodyHash };
+}
+
+
+
 export interface OnboardingTransactionInput {
   readonly profile: UpsertProfileInput;
   readonly workspace: CreateOrLoadWorkspaceInput;
@@ -37,6 +74,13 @@ export interface OnboardingTransactionInput {
     readonly metadata?: Record<string, unknown>;
   };
   readonly idempotency?: IdempotencyRecordInput;
+  /**
+   * Canonical body hash of the incoming request. When an idempotency record
+   * already exists for this scope+key, a mismatched hash is a conflict.
+   */
+  readonly expectedBodyHash?: string;
+  /** Set when a committed record was found — the route replays its stored response. */
+  readonly replay?: IdempotencyReplay;
 }
 
 export interface OnboardingResult {
