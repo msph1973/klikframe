@@ -9,6 +9,14 @@ import { createHash } from "node:crypto";
  */
 export const IDEMPOTENCY_MIN_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Same frozen window expressed in whole hours — the unit PostgreSQL
+ * `interval` arithmetic consumes. Derived, never re-declared: the schema's
+ * CHECK constraint and the checked-in migration both render this value
+ * (tests/unit/db/schema-contracts.test.ts keeps all three in sync).
+ */
+export const IDEMPOTENCY_MIN_TTL_HOURS = IDEMPOTENCY_MIN_TTL_MS / (60 * 60 * 1000);
+
 export interface IdempotencyKeyScope {
   readonly principalId: string;
   readonly route: string;
