@@ -121,8 +121,15 @@ beforeEach(() => {
 afterEach(() => {
   const record = process.env as Record<string, string | undefined>;
   for (const key of ["APP_ORIGIN", "NODE_ENV"] as const) {
-    if (previousEnv[key] === undefined) delete record[key];
-    else record[key] = previousEnv[key];
+    if (previousEnv[key] === undefined) {
+      const { [key]: _removed, ...rest } = record;
+      void rest;
+      for (const k of Object.keys(record)) {
+        if (k === key) Reflect.deleteProperty(record, k);
+      }
+    } else {
+      record[key] = previousEnv[key];
+    }
   }
   resetEnvCacheForTests();
   setIdentitySessionPort(new (class implements IdentitySessionPort {
