@@ -30,10 +30,35 @@ export function trustedOriginFromEnv(env: Pick<Env, "APP_ORIGIN">): string | nul
   }
 }
 
+/**
+ * Lenient form for OPERATOR-CONTROLLED config only: `APP_ORIGIN` may carry
+ * a path or trailing slash, which is stripped deterministically (an origin
+ * is scheme + host + port; a configured URL with a path would never equal a
+ * browser-sent Origin anyway).
+ */
 function normalizeOrigin(value: string): string {
   const parsed = new URL(value);
-  // An origin is scheme + host + port only; a configured URL with a path
-  // would never equal a browser-sent Origin, so strip it deterministically.
+  return `${parsed.protocol}//${parsed.host}`;
+}
+
+/**
+ * A browser `Origin` header is ALWAYS the bare serialized origin
+ * (RFC 6454 §6.2): `scheme://host[:port]` — never a path, query, fragment,
+ * or userinfo. Those components are attacker-meaningful, not noise: a
+ * forged `Origin: https://trusted.example/evil` must not normalize down to
+ * the trusted origin (PRRT_kwDOT_C_FM6bspCT). Validate the raw header
+ * shape BEFORE parsing, then reject URLs that carry credentials.
+ */
+const SERIALIZED_ORIGIN_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s/?#]+$/;
+
+function parseRequestOrigin(value: string): string {
+  if (!SERIALIZED_ORIGIN_PATTERN.test(value)) {
+    throw new Error(`not a serialized origin: ${value}`);
+  }
+  const parsed = new URL(value);
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error("Origin header must not carry credentials");
+  }
   return `${parsed.protocol}//${parsed.host}`;
 }
 
@@ -65,7 +90,7 @@ export function assertSameOrigin(request: Request, env: Pick<Env, "APP_ORIGIN"> 
   }
   let normalized: string;
   try {
-    normalized = normalizeOrigin(origin);
+    normalized = parseRequestOrigin(origin);
   } catch {
     throw new AppError("ORIGIN_DENIED", "Malformed Origin header");
   }

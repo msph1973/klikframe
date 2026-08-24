@@ -5,6 +5,7 @@ import { assertSameOrigin } from "@/lib/http/origin";
 import {
   IdempotencyRaceError,
   WorkspaceSlugConflictError,
+  AlreadyOnboardedRaceError,
   assertNotAlreadyOnboarded,
   runOnboardingTransaction,
   findIdempotencyRecord,
@@ -156,10 +157,14 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
       // whose snapshot observes the winner's committed record through the
       // replay lookup).
       //
-      // Precondition order matters (gitar-bot PRRT_kwDOT_C_FM6bsYro):
-      // assertNotAlreadyOnboarded runs INSIDE runOnce AFTER the idempotency
-      // replay lookup, so a genuine replay of the original request
-      // short-circuits to its stored 201 response first.
+      // Precondition ordering (PRRT_kwDOT_C_FM6bsYro, PRRT_kwDOT_C_FM6btFPe):
+      // assertNotAlreadyOnboarded runs INSIDE this transaction as a plain
+      // SELECT on tx — never a nested runner.run — AFTER the idempotency
+      // replay lookup: on the first success the record and the owner
+      // membership commit together, so a genuine replay MUST short-circuit
+      // to its stored 201 before the precondition can ever observe that
+      // membership. Only a FIRST-TIME request (lookup missed) is rejected
+      // here when the identity already owns a workspace.
       const runner = new DrizzleTransactionRunner(getDb());
       const runOnce = async (): Promise<
         { replayed: true; stored: unknown } | { replayed: false; responseBody: Record<string, unknown> }
@@ -174,10 +179,17 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
             if (existing.requestBodyHash !== requestBodyHash) {
               throw new AppError("IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used with a different request body");
             }
-            await assertNotAlreadyOnboarded(runner, principalId);
+            // Replay hit: the stored response IS the answer. No precondition
+            // here — on first success the idempotency record and the owner
+            // membership committed together, so checking membership now
+            // would 409 every genuine retry (PRRT_kwDOT_C_FM6bsYro).
             return { replayed: true as const, stored: existing.responseBody };
           }
-          await assertNotAlreadyOnboarded(runner, principalId);
+          // First-time path only: reject an identity that already owns a
+          // workspace BEFORE writing anything (PRRT_kwDOT_C_FM6bpRIt), as a
+          // plain SELECT on THIS transaction — never a nested runner.run
+          // inside the open tx (PRRT_kwDOT_C_FM6btFPe).
+          await assertNotAlreadyOnboarded(tx, principalId);
 
           const onboarded = await runOnboardingTransaction(tx, {
             profile: {
@@ -255,6 +267,22 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
       }
       return c.json(result.responseBody, 201);
     } catch (err) {
+      if (err instanceof AlreadyOnboardedRaceError) {
+        // Lost the FIRST-TIME ownership race (PRRT_kwDOT_C_FM6bspCN): the
+        // concurrent winner committed the identity's active owner
+        // membership, so this attempt stored nothing. Answer the frozen 409
+        // ALREADY_ONBOARDED envelope — never the raw 23505 as a generic 500.
+        return c.json(
+          {
+            error: {
+              code: "ALREADY_ONBOARDED",
+              message: "Identity already owns a workspace",
+              request_id: requestId,
+            },
+          },
+          409,
+        );
+      }
       if (err instanceof AppError && err.code === "IDEMPOTENCY_CONFLICT") {
         return errorEnvelope(err, requestId);
       }
@@ -274,19 +302,28 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
     }
   });
 }
+
+/**
+ * Maps an origin-guard rejection onto the frozen ORIGIN_DENIED envelope
+ * (API_SPEC.md §1.6). ONLY an actual `ORIGIN_DENIED` AppError converts
+ * here; any other failure (env/config faults, guard dependency errors) is
+ * rethrown so the app error handler returns the appropriate sanitized
+ * envelope — this helper must not mask unexpected errors as 403
+ * (PRRT_kwDOT_C_FM6bspCO).
+ */
+function originDeniedResponse(error: unknown, requestId: string): Response {
+  if (!(error instanceof AppError) || error.code !== "ORIGIN_DENIED") {
+    throw error;
+  }
+  return Response.json(
+    { error: { code: "ORIGIN_DENIED", message: error.message, request_id: requestId } },
+    { status: 403 },
+  );
+}
 /** Builds the standard `{ error: { code, message, request_id } }` JSON response for an AppError. */
 function errorEnvelope(err: AppError, requestId: string): Response {
   return Response.json(
     { error: { code: err.code, message: err.message, request_id: requestId } },
     { status: err.status },
-  );
-}
-
-/** Maps an origin-guard rejection onto the frozen ORIGIN_DENIED envelope (API_SPEC.md §1.6). */
-function originDeniedResponse(error: unknown, requestId: string): Response {
-  const message = error instanceof Error ? error.message : "Origin denied";
-  return Response.json(
-    { error: { code: "ORIGIN_DENIED", message, request_id: requestId } },
-    { status: 403 },
   );
 }

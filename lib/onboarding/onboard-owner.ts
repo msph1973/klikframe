@@ -3,7 +3,6 @@ import { and, eq, isNull } from "drizzle-orm";
 
 import { withAdvisoryLock } from "@/lib/db/advisory-lock";
 import type { DbTx } from "@/lib/db/transaction-runner";
-import type { TransactionRunner } from "@/lib/db/transaction-port";
 import { AppError } from "@/lib/http/errors";
 import { idempotencyRequests } from "@/lib/db/schema/idempotency-requests";
 import { workspaceMembers } from "@/lib/db/schema/workspace-members";
@@ -96,39 +95,35 @@ export function pgSqlState(error: unknown): string | undefined {
 /**
  * Precondition for POST /onboarding (API_SPEC.md §2 "owner session tanpa
  * workspace"): an identity that already holds an active owner membership is
- * `ALREADY_ONBOARDED`, whatever slug it now presents. The route calls this
- * BEFORE opening the onboarding transaction so the rejection never touches
- * the requested slug and cannot degrade into the membership unique-index
- * violation's generic 500 (PRRT_kwDOT_C_FM6bpRIt). A valid replay still
- * short-circuits earlier via its committed idempotency record.
+ * `ALREADY_ONBOARDED`, whatever slug it now presents.
  *
- * Runs as its own tiny serializable transaction: a single consistent SELECT,
- * no writes, nothing to retry beyond what {@link DrizzleTransactionRunner}
- * already covers. Concurrent first-time onboardings are unaffected — the
- * membership row does not exist yet, both racers pass, and the advisory lock
- * plus partial unique indexes inside the real transaction remain the
- * correctness boundary.
+ * Runs as a PLAIN SELECT on the CALLER'S transaction (PRRT_kwDOT_C_FM6btFPe):
+ * opening a second transaction via `runner.run` inside an already-open one
+ * would pin a second pooled connection (guaranteed deadlock at pool max 1)
+ * and execute outside the enclosing serializable snapshot and its 40001
+ * retry. Callers invoke this INSIDE their transaction AFTER the idempotency
+ * replay lookup misses (PRRT_kwDOT_C_FM6bsYro) — a valid replay must
+ * short-circuit to its stored response BEFORE this check ever runs, because
+ * the record and the owner membership commit together on the first success.
  */
 export async function assertNotAlreadyOnboarded(
-  runner: TransactionRunner<DbTx>,
+  tx: DbTx,
   authUserId: string,
 ): Promise<void> {
-  await runner.run(async (tx) => {
-    const rows = await tx
-      .select({ id: workspaceMembers.id })
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.authUserId, authUserId),
-          eq(workspaceMembers.role, "owner"),
-          eq(workspaceMembers.status, "active"),
-        ),
-      )
-      .limit(1);
-    if (rows[0] !== undefined) {
-      throw new AppError("ALREADY_ONBOARDED", "Identity already owns a workspace");
-    }
-  });
+  const rows = await tx
+    .select({ id: workspaceMembers.id })
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.authUserId, authUserId),
+        eq(workspaceMembers.role, "owner"),
+        eq(workspaceMembers.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (rows[0] !== undefined) {
+    throw new AppError("ALREADY_ONBOARDED", "Identity already owns a workspace");
+  }
 }
 
 export interface OnboardingTransactionInput {
@@ -173,15 +168,28 @@ export async function runOnboardingTransaction(
       ...input.workspace,
       authUserId: input.profile.authUserId,
     });
-    const membershipId = await createActiveOwnerMembership(tx, {
-      workspaceId: workspace.id,
-      authUserId: input.profile.authUserId,
-      now: input.workspace.now,
-      // Fresh-onboarding path (PRRT_kwDOT_C_FM6biuYn follow-up): when this
-      // transaction just created the workspace, the retry pre-SELECT cannot
-      // match a committed membership and is skipped.
-      skipExistingLookup: workspace.created,
-    });
+    let membershipId: string;
+    try {
+      membershipId = await createActiveOwnerMembership(tx, {
+        workspaceId: workspace.id,
+        authUserId: input.profile.authUserId,
+        now: input.workspace.now,
+        // Fresh-onboarding path (PRRT_kwDOT_C_FM6biuYn follow-up): when this
+        // transaction just created the workspace, the retry pre-SELECT cannot
+        // match a committed membership and is skipped.
+        skipExistingLookup: workspace.created,
+      });
+    } catch (error) {
+      if (pgSqlState(error) !== UNIQUE_VIOLATION_SQLSTATE) {
+        throw error;
+      }
+      // A concurrent first-time onboarding for this identity committed its
+      // active owner membership after both ownership prechecks passed; the
+      // partial unique indexes are the final boundary. Classify and abort so
+      // the route can answer 409 ALREADY_ONBOARDED instead of a generic 500
+      // (PRRT_kwDOT_C_FM6bspCN). Any other constraint is a genuine defect.
+      throw new AlreadyOnboardedRaceError();
+    }
     const auditId = await appendAuditEvent(tx, {
       workspaceId: workspace.id,
       actorType: "owner",
@@ -269,6 +277,21 @@ export class IdempotencyRaceError extends Error {
   }
 }
 
+/**
+ * Signals that THIS transaction lost the FIRST-TIME onboarding race
+ * (PRRT_kwDOT_C_FM6bspCN): two first-time requests for one identity passed
+ * their ownership prechecks before either committed, and this one hit the
+ * `workspace_members_single_owned_workspace_per_identity_key` partial
+ * unique (SQLSTATE 23505) at insert. The winner owns a workspace; this
+ * transaction stored nothing and is aborted. The route maps it to the
+ * frozen 409 `ALREADY_ONBOARDED` envelope — never the raw 23505 as a 500.
+ */
+export class AlreadyOnboardedRaceError extends Error {
+  constructor() {
+    super("identity was onboarded by a concurrent request");
+    this.name = "AlreadyOnboardedRaceError";
+  }
+}
 /**
  * Updates the stored idempotency response body in-place (same transaction)
  * once the real IDs exist, so a replay returns the exact body the original

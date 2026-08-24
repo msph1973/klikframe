@@ -59,7 +59,15 @@ describe("assertSameOrigin", () => {
     ["foreign", "https://evil.example"],
     ["null token", "null"],
     ["NULL uppercase", "NULL"],
-    ["malformed", "::not a url::"],
+    ["unparsable garbage", "::not a url::"],
+    // PRRT_kwDOT_C_FM6bspCT: a serialized origin never carries a path,
+    // query, fragment, or credentials — each must deny even when the host
+    // matches the configured origin.
+    ["path on trusted host", "https://app.example/evil/path"],
+    ["query on trusted host", "https://app.example?q=1"],
+    ["fragment on trusted host", "https://app.example#frag"],
+    ["credentials on trusted host", "https://user:pass@app.example"],
+    ["userinfo without password", "https://user@app.example"],
   ])("denies a %s Origin with ORIGIN_DENIED", (_name, origin) => {
     try {
       assertSameOrigin(requestWith({ Origin: origin }), envWith("https://app.example"));
