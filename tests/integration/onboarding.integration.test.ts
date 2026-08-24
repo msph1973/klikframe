@@ -1,9 +1,13 @@
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { DrizzleTransactionRunner, type DbTx } from "../../lib/db/transaction-runner";
+import {
+  DrizzleTransactionRunner,
+  SERIALIZABLE_TX_CONFIG,
+  type DbTx,
+} from "../../lib/db/transaction-runner";
 import { computeCanonicalBodyHash } from "../../lib/idempotency/idempotency-port";
-import { runOnboardingTransaction } from "../../lib/onboarding/onboard-owner";
+import { runOnboardingTransaction, type OnboardingResult } from "../../lib/onboarding/onboard-owner";
 import {
   closeHarnessDb,
   createHarnessDb,
@@ -57,29 +61,33 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
   }
 
   /**
-   * A genuine transaction context for repository work. `runOnboardingTransaction`
-   * receives a Drizzle *transaction*, not the pooled handle — handing it the
-   * raw `db` would autocommit every statement and defeat every rollback /
-   * atomicity scenario below (PRRT_kwDOT_C_FM6bh72L).
+   * A genuine serializable Drizzle transaction for repository work
+   * (PRRT_kwDOT_C_FM6bh72L): the callback receives a real `DbTx`, so every
+   * statement inside shares one connection, one snapshot and one COMMIT —
+   * never the pooled `db`, whose statements would each autocommit. The
+   * promise resolves only AFTER Drizzle has left the transaction: COMMIT
+   * done, connection released, writes durable before any later
+   * pooled-handle assertion runs.
    */
-  async function tx(): Promise<DbTx> {
-    // Test seam: runs one real transaction whose work is the no-op callback
-    // below, and resolves only AFTER Drizzle has left the transaction —
-    // COMMIT (or ROLLBACK) done, connection released. Handing scenarios a
-    // still-open handle instead would let later pooled-handle assertions
-    // race the commit that happens on some future tick
-    // (PRRT_kwDOT_C_FM6biuYq). The scenario's writes are durable by the
-    // time `await tx()` returns; failure paths swallow the driver error so
-    // scenarios observe their own effects rather than an empty-commit
-    // rejection.
-    const settled = Promise.withResolvers<DbTx>();
-    void requireHarness()
-      .db.transaction((t) => Promise.resolve(t as DbTx))
-      .then(
-        () => { settled.resolve(requireHarness().db as DbTx); },
-        () => { settled.resolve(requireHarness().db as DbTx); },
-      );
-    return settled.promise;
+  function tx<T>(work: (dbTx: DbTx) => Promise<T>): Promise<T> {
+    // `t` is a node-postgres PgTransaction structurally equivalent to the
+    // app's neon-serverless DbTx (see helpers/db.ts) — same query surface.
+    return requireHarness()
+      .db.transaction((t) => work(t as unknown as DbTx), SERIALIZABLE_TX_CONFIG);
+  }
+
+  /**
+   * One full onboarding inside one genuine serializable transaction.
+   * Failure paths resolve with the captured error so scenarios observe
+   * their own effects instead of an unhandled rejection; success paths
+   * return the {@link OnboardingResult}.
+   */
+  async function onboard(authUserId: string, slug: string): Promise<OnboardingResult | Error> {
+    try {
+      return await tx((dbTx) => runOnboardingTransaction(dbTx, onboardInput(authUserId, slug)));
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
   }
 
   function onboardInput(authUserId: string, slug: string) {
@@ -94,8 +102,8 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     const authUser = "it-onb-1";
     const input = onboardInput(authUser, `slug-${authUser}`);
     const [a, b] = await Promise.all([
-      runOnboardingTransaction(await tx(), input).catch((e: unknown) => e),
-      runOnboardingTransaction(await tx(), input).catch((e: unknown) => e),
+      tx((dbTx) => runOnboardingTransaction(dbTx, input)).catch((e: unknown) => e),
+      tx((dbTx) => runOnboardingTransaction(dbTx, input)).catch((e: unknown) => e),
     ]);
     const workspaces = await requireHarness().db.execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM workspaces WHERE slug = ${`slug-${authUser}`}`,
@@ -118,21 +126,23 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     const body = { business_name: "Klik Studio" };
     const hash = computeCanonicalBodyHash(body);
     const stored = { status: 201, payload: { data: { ok: true } } };
-    await runOnboardingTransaction(await tx(), {
-      ...onboardInput(scopeKey, `slug-${scopeKey}`),
-      idempotency: {
-        workspaceId: null,
-        principalId: scopeKey,
-        route: "/onboarding",
-        resourceId: null,
-        key: "idem-key-1",
-        requestBodyHash: hash,
-        responseStatus: stored.status,
-        responseBody: stored.payload,
-        expiresAt: new Date(NOW.getTime() + 24 * 60 * 60 * 1000),
-        now: NOW,
-      },
-    });
+    await tx((dbTx) =>
+      runOnboardingTransaction(dbTx, {
+        ...onboardInput(scopeKey, `slug-${scopeKey}`),
+        idempotency: {
+          workspaceId: null,
+          principalId: scopeKey,
+          route: "/onboarding",
+          resourceId: null,
+          key: "idem-key-1",
+          requestBodyHash: hash,
+          responseStatus: stored.status,
+          responseBody: stored.payload,
+          expiresAt: new Date(NOW.getTime() + 24 * 60 * 60 * 1000),
+          now: NOW,
+        },
+      }),
+    );
     const rows = await requireHarness().db.execute<{ response_status: number; request_body_hash: string }>(
       sql`SELECT response_status, request_body_hash FROM idempotency_requests WHERE principal_id = ${scopeKey} AND key = 'idem-key-1'`,
     );
@@ -172,7 +182,7 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
   it("scenario 4: a different identity taking the same slug leaves no orphan rows from the failed attempt", async () => {
     const slug = `slug-shared-${String(Date.now())}`;
     const incumbent = `it-slug-a-${String(Date.now())}`;
-    await runOnboardingTransaction(await tx(), onboardInput(incumbent, slug));
+    await tx((dbTx) => runOnboardingTransaction(dbTx, onboardInput(incumbent, slug)));
     // The conflicting identity's unit runs inside one transaction; the
     // WorkspaceSlugConflictError (mapped to 409 SLUG_CONFLICT) aborts it,
     // so the profile upsert performed before the conflict must roll back.
@@ -238,13 +248,13 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
       sql`SELECT count(*)::int AS n FROM workspaces`,
     );
     if ((workspaces.rows[0]?.n ?? 0) === 0) {
-      await runOnboardingTransaction(await tx(), onboardInput("it-trunc-a", `slug-it-trunc-${String(Date.now())}`));
+      await onboard("it-trunc-a", `slug-it-trunc-${String(Date.now())}`);
     }
     const events = await requireHarness().db.execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM audit_events`,
     );
     if ((events.rows[0]?.n ?? 0) === 0) {
-      await runOnboardingTransaction(await tx(), onboardInput("it-trunc-b", `slug-it-trunc-b-${String(Date.now())}`));
+      await onboard("it-trunc-b", `slug-it-trunc-b-${String(Date.now())}`);
     }
     const probe = await requireHarness().db.execute(
       sql`TRUNCATE TABLE audit_events`,
@@ -264,13 +274,27 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
   });
 
   it("scenario 6: cross-workspace composite reference is rejected by the database (23503)", async () => {
-    // Idempotent across re-runs on a shared database: an identity that has
-    // already onboarded keeps its workspace (the retry path returns the
-    // existing owner row), so seeding twice never duplicates state.
+    // Seeding note: this scenario re-seeds `it-cross-a`/`it-cross-b` on
+    // every run with fresh timestamped slugs. That is NOT an idempotent
+    // retry — runOnboardingTransaction always runs createOrLoadWorkspace +
+    // createActiveOwnerMembership, so once either identity already owns a
+    // workspace from an earlier run on a shared database, the second owner
+    // membership violates the workspace_members_single_owned_workspace_
+    // per_identity_key partial unique index and the attempt fails with
+    // SQLSTATE 23505. Seeding errors are surfaced, never swallowed: any
+    // captured failure MUST carry that expected duplicate-key code, so a
+    // genuine onboarding regression cannot hide behind the FK probe below.
+    const seedOrExpectRerunDuplicate = async (authUserId: string, slug: string): Promise<void> => {
+      const seeded = await onboard(authUserId, slug);
+      if (!(seeded instanceof Error)) return;
+      // A re-run failure must be the documented duplicate-owner 23505;
+      // anything else (or a silent swallow) fails the scenario.
+      expect(pgCode(seeded)).toBe("23505");
+    };
     const slugA = `slug-xa-${String(Date.now())}`;
     const slugB = `slug-xb-${String(Date.now())}`;
-    await runOnboardingTransaction(await tx(), onboardInput("it-cross-a", slugA)).catch((e: unknown) => e);
-    await runOnboardingTransaction(await tx(), onboardInput("it-cross-b", slugB)).catch((e: unknown) => e);
+    await seedOrExpectRerunDuplicate("it-cross-a", slugA);
+    await seedOrExpectRerunDuplicate("it-cross-b", slugB);
     // FK probe: audit_events referencing a nonexistent workspace must raise
     // SQLSTATE 23503 at the database level.
     const probe = await requireHarness().db
