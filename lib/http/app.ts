@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requestIdMiddleware, type RequestIdVariables } from "./request-id";
 import { AppError, toErrorEnvelope } from "./errors";
 import { registerHealthRoute } from "./health";
+import { wireIdentitySessionPort } from "@/lib/providers/composition";
 
 export type AppVariables = RequestIdVariables;
 export type KlikFrameApp = Hono<{ Variables: AppVariables }>;
@@ -12,6 +13,11 @@ export type KlikFrameApp = Hono<{ Variables: AppVariables }>;
  * request ID/error-handling wiring.
  */
 export function createApp(): KlikFrameApp {
+  // Session resolution must use the real (or test-fake) Neon adapter from
+  // the first served request — the unauthenticated default is never
+  // acceptable in production (cubic PRRT_kwDOT_C_FM6bh9m3).
+  wireIdentitySessionPort();
+
   const app = new Hono<{ Variables: AppVariables }>().basePath("/api/v1");
 
   app.use("*", requestIdMiddleware());

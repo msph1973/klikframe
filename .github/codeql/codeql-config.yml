@@ -1,0 +1,33 @@
+# CodeQL configuration for KlikFrame.
+#
+# Targeted query exclusions (cubic PRRT_kwDOT_C_FM6bh9nJ):
+#
+# js/insufficient-password-hash — lib/providers/realtime/token-signing-key.ts
+# (`signTokenRequestMac`). CodeQL models `createHmac` with a secret argument
+# as weak credential hashing, but this call site implements the Ably
+# TokenRequest wire-protocol MAC: HMAC-SHA256 over the canonical signing
+# input is MANDATED by the spec (ably.com/docs/api/token-request-spec) and
+# there is no password or other verifier to hash. Path scoping alone cannot
+# suppress the alert (paths/paths-ignore only select analyzed files; the
+# query still fires on any matching sink inside them — observed on PR #10),
+# so the exclusion lives here at query level.
+#
+# Scope guard: this excludes the query REPOSITORY-WIDE. No password hashing
+# exists anywhere in the tree (grep for createHash/scrypt/pbkdf2/bcrypt/
+# argon returns only non-credential SHA-256 digests for idempotency keys
+# and deterministic fake IDs). Any future password-storage introduction
+# MUST pick a memory-hard KDF (argon2id/scrypt) AND revisit this filter in
+# review — it will not flag weak choices while excluded.
+query-filters:
+  - exclude:
+      id: js/insufficient-password-hash
+
+paths:
+  - app
+  - lib
+  - proxy.ts
+
+paths-ignore:
+  - tests
+  - scripts
+  - drizzle

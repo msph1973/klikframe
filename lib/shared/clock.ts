@@ -14,10 +14,15 @@ export class SystemClock implements Clock {
 }
 
 export class FixedClock implements Clock {
-  private readonly fixedMillis: number;
+  private fixedMillis: number;
 
   constructor(fixed: Date) {
     this.fixedMillis = fixed.getTime();
+  }
+
+  /** Test seam: moves "now" forward/backward to `next` for later reads. */
+  advanceTo(next: Date): void {
+    this.fixedMillis = next.getTime();
   }
 
   now(): Date {
