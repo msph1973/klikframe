@@ -7,6 +7,7 @@ import {
   findIdempotencyRecord,
 } from "@/lib/onboarding/onboard-owner";
 import { getDb } from "@/lib/db/client";
+import { computeCanonicalBodyHash } from "@/lib/idempotency/idempotency-port";
 import type { KlikFrameApp } from "@/lib/http/app";
 
 /**
@@ -65,7 +66,8 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
       );
     }
 
-    const payloadSchema = z.object({
+    // API_SPEC.md §9: unknown fields are rejected on sensitive mutations.
+    const payloadSchema = z.strictObject({
       business_name: z.string().min(1).max(255),
       slug: z
         .string()
@@ -92,7 +94,7 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
 
     const now = new Date();
 
-    const requestBodyHash = stableStringify(parsed.data);
+    const requestBodyHash = computeCanonicalBodyHash(parsed.data);
 
     try {
       const result = await getDb().transaction(async (tx) => {
@@ -138,7 +140,6 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
             expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
             now,
           },
-          expectedBodyHash: requestBodyHash,
         });
 
         return {
@@ -160,6 +161,9 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
       });
 
       if (result.replayed) {
+        // API_SPEC.md §1.4: valid replay returns the stored body plus the
+        // Idempotency-Replayed marker header.
+        c.header("Idempotency-Replayed", "true");
         return c.json(result.stored as Record<string, unknown>, 201);
       }
       void result.result;
@@ -194,14 +198,3 @@ export function registerOnboardingRoute(app: KlikFrameApp): void {
   });
 }
 
-/** Deterministic JSON stringification for the idempotency body hash. */
-function stableStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, val: unknown) => {
-    if (val !== null && typeof val === "object" && !Array.isArray(val)) {
-      return Object.fromEntries(
-        Object.entries(val as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
-      );
-    }
-    return val;
-  });
-}

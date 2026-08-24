@@ -74,13 +74,6 @@ export interface OnboardingTransactionInput {
     readonly metadata?: Record<string, unknown>;
   };
   readonly idempotency?: IdempotencyRecordInput;
-  /**
-   * Canonical body hash of the incoming request. When an idempotency record
-   * already exists for this scope+key, a mismatched hash is a conflict.
-   */
-  readonly expectedBodyHash?: string;
-  /** Set when a committed record was found — the route replays its stored response. */
-  readonly replay?: IdempotencyReplay;
 }
 
 export interface OnboardingResult {
