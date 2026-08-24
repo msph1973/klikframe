@@ -49,7 +49,7 @@ function normalizeOrigin(value: string): string {
  * the trusted origin (PRRT_kwDOT_C_FM6bspCT). Validate the raw header
  * shape BEFORE parsing, then reject URLs that carry credentials.
  */
-const SERIALIZED_ORIGIN_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s/?#]+$/;
+const SERIALIZED_ORIGIN_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s/?#\\]+$/;
 
 function parseRequestOrigin(value: string): string {
   if (!SERIALIZED_ORIGIN_PATTERN.test(value)) {

@@ -99,32 +99,9 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
     // the empty store, then enters the write path — where it blocks on the
     // advisory lock the winner already holds.
     type LoserOutcome = { kind: "committed" } | { kind: "failed"; sqlstate?: string | undefined };
-    const loserFirstAttempt = (async (): Promise<LoserOutcome> => {
-      try {
-        return await db.transaction(async (loserTx) => {
-          const existing = await findIdempotencyRecord(loserTx, {
-            principalId: scopeKey,
-            route: "/api/v1/onboarding",
-            key: "race-key-1",
-          });
-          if (existing !== null) {
-            throw new Error("loser unexpectedly observed the uncommitted winner");
-          }
-          // Snapshot is now pinned pre-winner; enter the write path, where
-          // this tx blocks on the advisory lock the winner already holds.
-          await winnerHoldsLock.promise;
-          loserLookupDone.resolve(undefined);
-          await runOnboardingTransaction(loserTx, input);
-          return { kind: "committed" as const };
-        }, SERIALIZABLE_TX_CONFIG);
-      } catch (error) {
-        return { kind: "failed" as const, sqlstate: pgCode(error) };
-      }
-    })();
 
-    // WINNER: takes the advisory lock FIRST (so the loser is guaranteed to
-    // be the one that blocks), stages every write, then holds COMMIT until
-    // the loser has pinned its stale snapshot with a missed replay lookup.
+    // WINNER: constructed FIRST so it takes the advisory lock before the
+    // loser can enter its write path.
     const winnerCommit = (async (): Promise<"committed" | Error> => {
       try {
         return await db.transaction(async (winnerTx) => {
@@ -137,6 +114,34 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
         }, SERIALIZABLE_TX_CONFIG);
       } catch (error) {
         return error instanceof Error ? error : new Error(String(error));
+      }
+    })();
+
+    // Give the winner's tx a beat to actually acquire the advisory lock
+    // before the loser opens its own transaction.
+    await winnerHoldsLock.promise;
+
+    const loserFirstAttempt = (async (): Promise<LoserOutcome> => {
+      try {
+        return await db.transaction(async (loserTx) => {
+          const existing = await findIdempotencyRecord(loserTx, {
+            principalId: scopeKey,
+            route: "/api/v1/onboarding",
+            key: "race-key-1",
+          });
+          if (existing !== null) {
+            throw new Error("loser unexpectedly observed the uncommitted winner");
+          }
+          // Snapshot is now pinned pre-winner. Signal the lookup happened,
+          // then enter the write path — where this tx blocks on the advisory
+          // lock the winner holds (the winner was started first and takes
+          // pg_advisory_xact_lock before staging writes).
+          loserLookupDone.resolve(undefined);
+          await runOnboardingTransaction(loserTx, input);
+          return { kind: "committed" as const };
+        }, SERIALIZABLE_TX_CONFIG);
+      } catch (error) {
+        return { kind: "failed" as const, sqlstate: pgCode(error) };
       }
     })();
 

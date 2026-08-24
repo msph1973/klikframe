@@ -198,7 +198,7 @@ describe("POST /api/v1/onboarding — ALREADY_ONBOARDED ordering", () => {
   });
 
   it("rejects a first-time request from an identity that already owns a workspace with 409 ALREADY_ONBOARDED", async () => {
-    // PRRT_kwDOT_C_FM6bpRIt: an onboarded owner submitting another slug is
+    // PRRT_kwDOT_C_FM6bpRIt: an already-onboarded identity submitting another slug is rejected with 409 ALREADY_ONBOARDED before any write.
     seedAuthenticatedSession();
     vi.mocked(getDb).mockReturnValue(fakeDbFrom([
       { rows: [] }, // replay lookup misses
