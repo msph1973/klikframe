@@ -92,8 +92,8 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
     // Deterministic handoff: the WINNER takes the advisory lock first and
     // only then signals the loser into the write path, so the loser is
     // guaranteed to block on the lock — never the reverse.
-    const winnerHoldsLock = Promise.withResolvers<void>();
-    const loserLookupDone = Promise.withResolvers<void>();
+    const winnerHoldsLock = Promise.withResolvers<undefined>();
+    const loserLookupDone = Promise.withResolvers<undefined>();
 
     // LOSER: opens its transaction FIRST, misses the replay lookup against
     // the empty store, then enters the write path — where it blocks on the
@@ -102,7 +102,7 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
     const loserFirstAttempt = (async (): Promise<LoserOutcome> => {
       try {
         return await db.transaction(async (loserTx) => {
-          const existing = await findIdempotencyRecord(loserTx as unknown as DbTx, {
+          const existing = await findIdempotencyRecord(loserTx, {
             principalId: scopeKey,
             route: "/api/v1/onboarding",
             key: "race-key-1",
@@ -113,8 +113,8 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
           // Snapshot is now pinned pre-winner; enter the write path, where
           // this tx blocks on the advisory lock the winner already holds.
           await winnerHoldsLock.promise;
-          loserLookupDone.resolve();
-          await runOnboardingTransaction(loserTx as unknown as DbTx, input);
+          loserLookupDone.resolve(undefined);
+          await runOnboardingTransaction(loserTx, input);
           return { kind: "committed" as const };
         }, SERIALIZABLE_TX_CONFIG);
       } catch (error) {
@@ -130,7 +130,7 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
         return await db.transaction(async (winnerTx) => {
           const tx = winnerTx as unknown as DbTx;
           await tx.execute(sql`SELECT pg_advisory_xact_lock(${advisoryLockKeyString(scopeKey)}::int8)`);
-          winnerHoldsLock.resolve();
+          winnerHoldsLock.resolve(undefined);
           await runOnboardingTransaction(tx, input);
           await loserLookupDone.promise;
           return "committed" as const;
@@ -207,13 +207,13 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
     const slug = `slug-${authUser}`;
     const db = requireHarness().db;
     const input = onboardInput(authUser, slug);
-    const loserPrecheckDone = Promise.withResolvers<void>();
+    const loserPrecheckDone = Promise.withResolvers<undefined>();
 
     type LoserOutcome = { kind: "committed" } | { kind: "failed"; sqlstate?: string | undefined };
 
     // LOSER FIRST: passes its ownership precheck against the empty store,
     // then enters the write path behind the winner's advisory lock.
-    const winnerHoldsLock = Promise.withResolvers<void>();
+    const winnerHoldsLock = Promise.withResolvers<undefined>();
     // Wait for the winner to hold the advisory lock BEFORE consuming a
     // pooled connection: awaiting inside the tx callback would risk both
     // transactions pinning their connections against each other.
@@ -225,7 +225,7 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
           // Precheck runs while every winner write is still uncommitted —
           // this pins the pre-winner serializable snapshot.
           await assertNotAlreadyOnboarded(tx, authUser);
-          loserPrecheckDone.resolve();
+          loserPrecheckDone.resolve(undefined);
           // Now enter the write path: block on the winner's advisory lock,
           // then lose the race against its staged writes.
           await runOnboardingTransaction(tx, input);
@@ -247,7 +247,7 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
           // Lock held: release the loser. Its precheck SELECT runs against
           // our still-uncommitted state, pins the stale snapshot and
           // resolves the gate below; only then do we stage our own writes.
-          winnerHoldsLock.resolve();
+          winnerHoldsLock.resolve(undefined);
           await runOnboardingTransaction(tx, input);
           await loserPrecheckDone.promise;
           return "committed" as const;
@@ -273,7 +273,7 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
     let race: unknown;
     try {
       await db.transaction(async (dupeTx) => {
-        await runOnboardingTransaction(dupeTx as unknown as DbTx, onboardInput(authUser, `${slug}-second`));
+        await runOnboardingTransaction(dupeTx, onboardInput(authUser, `${slug}-second`));
       }, SERIALIZABLE_TX_CONFIG);
     } catch (error) {
       race = error;
@@ -295,7 +295,7 @@ describeIntegration("onboarding overlap races (real PostgreSQL)", () => {
     // transaction, exactly as the route invokes it inside runOnce.
     await expect(
       db.transaction(async (lateTx) => {
-        await assertNotAlreadyOnboarded(lateTx as unknown as DbTx, authUser);
+        await assertNotAlreadyOnboarded(lateTx, authUser);
       }, SERIALIZABLE_TX_CONFIG),
     ).rejects.toThrow("Identity already owns a workspace");
   }, 20_000);
