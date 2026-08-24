@@ -102,7 +102,7 @@ export class ResendEmailSender implements EmailSender {
     );
   }
   private async deliver(request: SendEmailRequest): Promise<EmailDeliveryRecord> {
-    let outcome: { response: Response; bodyText: string } | undefined;
+    let outcome: { response: Response; bodyText: string | null } | undefined;
     // Set when the deadline wins the race; read in the classification
     // below to label the failure `timeout` rather than a generic outage.
     // Held in a box so the abort listener's write stays visible to reads
@@ -147,9 +147,14 @@ export class ResendEmailSender implements EmailSender {
         }).then(async (settled) => {
           // The Response arriving does NOT end the race: keep it pending
           // until the body text is consumed, so a stalled body stays under
-          // the same deadline and abort signal. The buffered text travels
-          // with the response — the stream cannot be read twice.
-          const bodyText = await settled.text();
+          // the same deadline and abort signal. The read is guarded so a
+          // body that ERRORS mid-flight (truncated connection, reset
+          // stream) resolves with `null` instead of rejecting — the race's
+          // catch would otherwise mislabel it "retryable/unreachable"
+          // (cubic PRRT_kwDOT_C_FM6bh9nE): a body we could not fully read
+          // can never yield a trustworthy send receipt, so it fails as
+          // malformed_response below, exactly like a non-JSON body.
+          const bodyText = await settled.text().catch(() => null);
           return { response: settled, bodyText };
         }),
         new Promise<undefined>((resolve) => {
@@ -197,11 +202,20 @@ export class ResendEmailSender implements EmailSender {
       );
     }
 
-    // Body text was already buffered inside the raced promise. A body
-    // that never was JSON (or empty) maps to malformed_response, exactly
-    // like the pre-buffered `.json().catch(() => null)` path.
-    const parsedBody: unknown = jsonOrNull(outcome.bodyText);
-    const parsed = resendSendResponseSchema.safeParse(parsedBody);
+    // Body text was already buffered inside the raced promise. `null`
+    // means the body read itself failed mid-flight (the guarded
+    // `.text().catch(() => null)` above); a body that never was JSON (or
+    // empty) means the provider answered garbage. Both can never yield a
+    // trustworthy send receipt and map to malformed_response — NOT to the
+    // race's retryable "unreachable" branch.
+    if (outcome.bodyText === null) {
+      throw new ProviderError(
+        "malformed_response",
+        { provider: "resend", operation: "send" },
+        "The email provider response body could not be read",
+      );
+    }
+    const parsed = resendSendResponseSchema.safeParse(jsonOrNull(outcome.bodyText));
     if (!parsed.success) {
       throw new ProviderError(
         "malformed_response",

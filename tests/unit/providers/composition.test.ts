@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { resetAuthCompositionForTests } from "../../../lib/auth/server";
+import type { IdentitySessionPort } from "../../../lib/auth/identity-session-port";
 import { resetEnvCacheForTests } from "../../../lib/config/env";
 
 /**
@@ -26,6 +28,10 @@ function envAll(): void {
   process.env.S3_BUCKET = "klikframe-test-bucket";
   resetEnvCacheForTests();
 }
+
+afterEach(() => {
+  resetAuthCompositionForTests();
+});
 
 describe("provider composition", () => {
   it("builds a full fake provider set under NODE_ENV=test", async () => {
@@ -102,5 +108,40 @@ describe("provider composition", () => {
     wireIdentitySessionPort();
     expect(getIdentitySessionPort()).toBe(first);
     expect(first.constructor.name).toBe("NeonAuthAdapter");
+  });
+
+  it("leaves a foreign IdentitySessionPort installed by another composition root untouched", async () => {
+    envAll();
+    // Regression for cubic PRRT_kwDOT_C_FM6bja3w: every /api/auth/* request
+    // used to overwrite whatever port another composition root or test had
+    // installed. First writer must win — the pre-installed custom port
+    // survives repeated cold-start calls in BOTH runtime selections.
+    const { wireIdentitySessionPort } = await import("../../../lib/providers/composition");
+    const { getIdentitySessionPort, setIdentitySessionPort, isIdentitySessionPortWired } =
+      await import("../../../lib/auth/server");
+    const foreign: IdentitySessionPort = {
+      resolveSession: () =>
+        Promise.resolve({
+          kind: "authenticated",
+          session: {
+            identity: { authUserId: "custom-root", email: null },
+            issuedAt: new Date(0),
+            expiresAt: new Date(1),
+          },
+        }),
+    };
+    setIdentitySessionPort(foreign);
+    expect(isIdentitySessionPortWired()).toBe(true);
+
+    wireIdentitySessionPort();
+    wireIdentitySessionPort();
+    expect(getIdentitySessionPort()).toBe(foreign);
+    await expect(
+      getIdentitySessionPort().resolveSession(new Request("https://app.example.com/")),
+    ).resolves.toMatchObject({ kind: "authenticated", session: { identity: { authUserId: "custom-root" } } });
+
+    // The probe reports UNwired again once tests restore the default.
+    resetAuthCompositionForTests();
+    expect(isIdentitySessionPortWired()).toBe(false);
   });
 });

@@ -109,7 +109,13 @@ describe("FakeObjectStorage — expiry enforcement", () => {
     // once matched the object BEFORE checking expiry, so a signed GET kept
     // working after its TTL. Expiry must be enforced before lookup, exactly
     // like S3 answering 403 for an expired signature.
-    const store = storage();
+    //
+    // ONE store instance models reality: the object is registered on it,
+    // time is advanced past the signed TTL on that same instance's clock,
+    // and consumption happens there too — so the "object still exists"
+    // half of the premise is actually exercised.
+    const clock = new FixedClock(BASE);
+    const store = new FakeObjectStorage(clock);
     await store.consumePresignedUpload({
       outcome: await store.presignUpload({
         key: "ws_4/payment_proof/late.jpg",
@@ -123,16 +129,25 @@ describe("FakeObjectStorage — expiry enforcement", () => {
       checksumSha256: CHECKSUM,
     });
     const download = await store.presignDownload({ key: "ws_4/payment_proof/late.jpg", expiresInMs: 60_000 });
-    // Move "now" past the signed TTL; the object is still registered.
-    const lateStore = new FakeObjectStorage(
-      new FixedClock(new Date(BASE.getTime() + 60_000)),
-    );
+
+    // Move "now" exactly to the signed expiry on the SAME store: the URL
+    // is expired, while the object it names is still registered — assert
+    // that BEFORE consuming so the rejection cannot be mistaken for a
+    // missing-object miss.
+    clock.advanceTo(new Date(BASE.getTime() + 60_000));
+    await expect(store.head("ws_4/payment_proof/late.jpg")).resolves.toMatchObject({
+      kind: "found",
+      sizeBytes: 96,
+      contentType: "image/jpeg",
+      checksumSha256: CHECKSUM,
+    });
     // Assert on the exact expired-signature message: a mere
     // unknown-object/permanent error must NOT satisfy this assertion, so
     // the test fails against implementations that skip assertUnexpired.
-    await expect(lateStore.consumePresignedDownload(download.url)).rejects.toThrow(
+    await expect(store.consumePresignedDownload(download.url)).rejects.toThrow(
       "The storage URL has expired",
     );
+    // The rejected consume must not have removed the still-present object.
     expect(store.objectCount).toBe(1);
   });
 });

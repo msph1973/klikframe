@@ -25,7 +25,9 @@ async function handleAuthRequest(request: Request): Promise<Response> {
   // Session resolution must use the real Neon adapter (or test fake) from
   // the first served request; this route module is its own composition
   // root and is served even when no /api/v1 route was mounted first
-  // (cubic PRRT_kwDOT_C_FM6bh9m3). Idempotent and env-tolerant.
+  // (cubic PRRT_kwDOT_C_FM6bh9m3). First writer wins: a port installed by
+  // another composition root or test is left untouched
+  // (cubic PRRT_kwDOT_C_FM6bja3w). Idempotent and env-tolerant.
   wireIdentitySessionPort();
 
   const incoming = request.headers.get(REQUEST_ID_HEADER);

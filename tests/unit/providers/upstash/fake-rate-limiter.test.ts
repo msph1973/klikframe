@@ -170,17 +170,22 @@ describe("FakeRateLimiter — edge branches", () => {
     // One millisecond BEFORE the boundary the single-slot window is
     // already exhausted. For a blocked window nowMs is strictly below
     // resetAtMs (integers), so max(0, resetAtMs - nowMs) can never be 0:
-    // the smallest possible wait is exactly 1ms.
+    // the smallest possible wait is exactly 1ms, and resetAt names the
+    // instant the exhausted window rolls over.
     const justBefore = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 59_999)));
     await justBefore.limit([{ key: "edge2", limit: 1, windowMs: 60_000 }]);
     const blocked = await justBefore.limit([{ key: "edge2", limit: 1, windowMs: 60_000 }]);
     if (blocked.success) throw new Error("expected failure");
     expect(blocked.retryAfterMs).toBe(1);
+    expect(blocked.resetAt.getTime()).toBe(BASE.getTime() + 60_000);
 
-    // Exactly one full window after BASE the fresh window admits a hit.
+    // Exactly one full window after BASE the fresh window admits a hit
+    // again and reports the NEXT rollover as its reset.
     const atBoundary = new FakeRateLimiter(new FixedClock(new Date(BASE.getTime() + 60_000)));
     const first = await atBoundary.limit([{ key: "edge", limit: 1, windowMs: 60_000 }]);
     expect(first.success).toBe(true);
+    if (!first.success) throw new Error("expected success");
+    expect(first.resetAt.getTime()).toBe(BASE.getTime() + 120_000);
   });
 
   it("records both hits when two windows share one bucket (same key and span)", async () => {

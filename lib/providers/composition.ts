@@ -3,7 +3,10 @@ import { getNeonAuthAdapter } from "@/lib/auth/neon-auth-adapter";
 import {
   getFakeIdentitySessionPort,
 } from "@/lib/auth/fake-identity-session-port";
-import { setIdentitySessionPort } from "@/lib/auth/server";
+import {
+  isIdentitySessionPortWired,
+  setIdentitySessionPort,
+} from "@/lib/auth/server";
 import { SystemClock } from "@/lib/shared/clock";
 import type { Clock } from "@/lib/shared/clock";
 import { getEnv } from "@/lib/config/env";
@@ -81,12 +84,17 @@ function buildProviders(): ProviderSet {
 /**
  * Wires the identity composition point from `lib/auth/server.ts` so the
  * first served request resolves real sessions (cubic PRRT_kwDOT_C_FM6bh9m3).
- * Idempotent and cheap on every cold-start path: under
- * `NODE_ENV === "test"` it hands out the shared deterministic fake (the
- * TESTING.md §2.2 IdentitySessionPort test adapter) instead of building a
- * real Neon adapter, and everywhere else it reuses the process-wide cached
- * adapter from `getNeonAuthAdapter()` — mirroring the getProviders()
- * caching pattern.
+ * First writer wins: if another composition root or a test already
+ * installed an IdentitySessionPort, this leaves it untouched, so every
+ * cold-start path (route modules, `createApp()`) can call it unconditionally
+ * without clobbering foreign session resolution
+ * (cubic PRRT_kwDOT_C_FM6bja3w).
+ *
+ * Otherwise idempotent and cheap: under `NODE_ENV === "test"` it hands out
+ * the shared deterministic fake (the TESTING.md §2.2 IdentitySessionPort
+ * test adapter) instead of building a real Neon adapter, and everywhere
+ * else it reuses the process-wide cached adapter from
+ * `getNeonAuthAdapter()` — mirroring the getProviders() caching pattern.
  *
  * Environment-tolerant by design: when NEON_AUTH_BASE_URL is not
  * configured outside tests, the composition keeps lib/auth/server.ts's
@@ -97,6 +105,14 @@ function buildProviders(): ProviderSet {
  * sanitized failure shape every other adapter defers to request time.
  */
 export function wireIdentitySessionPort(): void {
+  // First writer wins: another composition root or a test may have
+  // installed its own IdentitySessionPort already; overwriting it would
+  // replace that custom session resolution with the Neon adapter or the
+  // shared fake on every cold-start call
+  // (cubic PRRT_kwDOT_C_FM6bja3w).
+  if (isIdentitySessionPortWired()) {
+    return;
+  }
   try {
     if (getEnv().NODE_ENV === "test") {
       setIdentitySessionPort(getFakeIdentitySessionPort());

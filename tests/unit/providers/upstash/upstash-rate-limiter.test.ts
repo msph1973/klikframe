@@ -248,4 +248,71 @@ describe("Upstash REST adapter — additional contract branches", () => {
       operation: "limit",
     });
   });
+
+  it("rejects sub-second windows with the same permanent error as the fake", async () => {
+    envUpstash();
+    // Regression for cubic PRRT_kwDOT_C_FM6bja3w sibling 3839836843: a
+    // 1500ms window used to pass the fake while this adapter threw, so
+    // getProviders() could swap implementations by NODE_ENV and tests
+    // would pass on config production rejects. Both must enforce the SAME
+    // whole-second rule — including the exact sanitized message.
+    let call = 0;
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      call += 1;
+      return new Response(JSON.stringify({ result: "sha7" }), { status: 200 });
+    }) as typeof fetch;
+    const limiter = new UpstashRestRateLimiter(new FixedClock(BASE), { fetchImpl });
+    const expectedMessage = "Rate limit window requires a whole number of seconds (windowMs must be a positive multiple of 1000)";
+    await expect(
+      limiter.limit([{ key: "k5", limit: 5, windowMs: 1_500 }]),
+    ).rejects.toMatchObject({
+      kind: "permanent",
+      provider: "upstash",
+      operation: "limit",
+      message: expectedMessage,
+    });
+    await expect(
+      limiter.limit([{ key: "k5", limit: 5, windowMs: 1500_500 }]),
+    ).rejects.toMatchObject({ kind: "permanent", message: expectedMessage });
+
+    const fake = new FakeRateLimiter(new FixedClock(BASE));
+    const fakeCaught = await fake.limit([{ key: "k5", limit: 5, windowMs: 1_500 }]).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(fakeCaught).toBeInstanceOf(Error);
+    expect((fakeCaught as Error).message).toBe(expectedMessage);
+
+    // Validation is client-side: nothing ever reached the wire.
+    expect(call).toBe(0);
+  });
+
+  it("binds failure resetAt to the latest rollover among exhausted windows", async () => {
+    envUpstash();
+    // Regression for cubic PRRT_kwDOT_C_FM6biR8M-ja3w sibling of 3839532799:
+    // when several windows are left exhausted, resetAt is the LATEST
+    // rollover — a retry can succeed only after EVERY exhausted window has
+    // rolled over. Rows: the long window reports its last taken slot (1 of
+    // 1 — drained to zero BY this call), the short one the sentinel 0
+    // (already full before it). Both must roll over before a retry.
+    let call = 0;
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      call += 1;
+      if (call === 1) return new Response(JSON.stringify({ result: "sha8" }), { status: 200 });
+      return new Response(JSON.stringify({ result: [1, 0] }), { status: 200 });
+    }) as typeof fetch;
+    const limiter = new UpstashRestRateLimiter(new FixedClock(BASE), { fetchImpl });
+    const result = await limiter.limit([
+      { key: "long", limit: 1, windowMs: 120_000 },
+      { key: "short", limit: 3, windowMs: 30_000 },
+    ]);
+    if (result.success) throw new Error("expected failure");
+    expect(result.resetAt.getTime()).toBe(BASE.getTime() + 120_000);
+    expect(result.retryAfterMs).toBe(120_000);
+    // The label window is the one attaining the LATEST rollover (the long
+    // window), so its own limit labels the result.
+    expect(result.limit).toBe(1);
+  });
 });

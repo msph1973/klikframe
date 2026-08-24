@@ -47,6 +47,16 @@ export function getIdentitySessionPort(): IdentitySessionPort {
   return identityPort;
 }
 
+/**
+ * True once ANY composition root (or test) installed a non-default port.
+ * `wireIdentitySessionPort()` consults this so repeated cold-start calls
+ * never overwrite a port that came from elsewhere
+ * (cubic PRRT_kwDOT_C_FM6bja3w).
+ */
+export function isIdentitySessionPortWired(): boolean {
+  return !(identityPort instanceof UnconfiguredIdentitySessionPort);
+}
+
 export function setIdentitySessionPort(port: IdentitySessionPort): void {
   identityPort = port;
 }

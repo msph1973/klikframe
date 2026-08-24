@@ -9,6 +9,15 @@
  * with index `floor(now / windowMs)` — mirroring @upstash/ratelimit's
  * fixed-window algorithm; nothing here is a sliding/logged window.
  *
+ * Whole-second durations ONLY: every implementation validates that
+ * `windowMs` is a positive integer multiple of 1000 and rejects anything
+ * else as a permanent ProviderError BEFORE any counter changes
+ * (cubic PRRT_kwDOT_C_FM6bja3w). The Lua script indexes buckets in whole
+ * seconds, so a sub-second `windowMs` would make the fake and the real
+ * limiter disagree on both the enforced limit and the reset times;
+ * rejecting it at the port keeps the test double and the production
+ * adapter interchangeable by construction.
+ *
  * Shared multi-window contract (mirrors @upstash/ratelimit's combined
  * limiters): every window is evaluated and consumed in ONE atomic step;
  * the overall result succeeds only if EVERY window passes, and consumed
@@ -21,7 +30,11 @@ export interface RateLimitWindow {
   readonly key: string;
   /** Maximum hits allowed inside one fixed window of `windowMs`. */
   readonly limit: number;
-  /** Window duration in milliseconds. */
+  /**
+   * Window duration in milliseconds. MUST be a whole number of seconds —
+   * a positive integer multiple of 1000; implementations reject other
+   * values as a permanent error before consuming any hits.
+   */
   readonly windowMs: number;
 }
 
@@ -33,7 +46,8 @@ export interface RateLimitSuccess {
   readonly remaining: number;
   /**
    * When every configured window has fully rolled over (the latest window
-   * end) — the earliest instant all counters are fresh again.
+   * end) — the earliest instant all counters are fresh again. Ties among
+   * equal rollover times are immaterial here (same instant).
    */
   readonly resetAt: Date;
 }
@@ -49,7 +63,9 @@ export interface RateLimitFailure {
    * this call (the blocked windows plus any window drained to zero by
    * taking its last slot) must have rolled over, so when several windows
    * are exhausted with different reset times this is the LATEST of their
-   * rollover times — never an earlier single-window rollover.
+   * rollover times — never an earlier single-window rollover. Ties break
+   * to the lowest window index, matching the reduction order shared by
+   * both implementations.
    */
   readonly resetAt: Date;
   /** Milliseconds until `resetAt`; feeds a `Retry-After` header. */

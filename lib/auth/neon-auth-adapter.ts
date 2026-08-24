@@ -160,8 +160,12 @@ export class NeonAuthAdapter implements IdentitySessionPort {
           { cause },
         );
       }
-      // JWKSNoMatchingKey is rotation lag on an otherwise healthy set:
-      // fail closed to unauthenticated (401 path), never a 503.
+      // JWKSNoMatchingKey is NOT a JWKS outage: the set resolved fine and
+      // simply holds no key for the token's `kid` — on an unauthenticated
+      // request path the header (and thus the kid) is attacker-controlled,
+      // so an unknown kid is forged-token territory. Fail closed to
+      // unauthenticated (401 path), never a retryable 503; genuine rotation
+      // lag self-heals when the client retries with a fresh token.
       if (cause instanceof joseErrors.JWKSNoMatchingKey) {
         return { kind: "unauthenticated" };
       }

@@ -85,6 +85,62 @@ describe("ResendEmailSender contract (injected fetch)", () => {
       }),
     ).rejects.toMatchObject({ kind: "malformed_response", provider: "resend" });
   });
+  it("maps a mid-flight body-read failure to malformed_response, not retryable", async () => {
+    envResend();
+    // Regression for cubic PRRT_kwDOT_C_FM6bh9nE: the response HEADERS
+    // arrive with status 200 but the BODY stream errors before completing
+    // (truncated connection). The old code awaited `settled.text()` inside
+    // the raced promise unguarded, so this rejection fell into the race's
+    // catch and was mislabeled retryable/"unreachable" — a 503 for what is
+    // really an unusable response. The guarded read must resolve null and
+    // classify as malformed_response instead.
+    let call = 0;
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      call += 1;
+      if (call === 1) {
+        // The response HEADERS arrive with status 200 but the BODY stream
+        // errors before completing (truncated connection).
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([123])); // `{` — plausible JSON start
+            queueMicrotask(() => {
+              controller.error(new Error("connection reset"));
+            });
+          },
+        });
+        return new Response(body, { status: 200 });
+      }
+      // Recovery mode: respond normally so the queue proves it unwedged.
+      return new Response(JSON.stringify({ id: "msg_ok" }), { status: 200 });
+    }) as typeof fetch;
+    const sender = new ResendEmailSender({ clock: new FixedClock(BASE), fetchImpl });
+    await expect(
+      sender.send({
+        to: "client@example.com",
+        subject: "s",
+        text: "t",
+        dedupeKey: "k2b",
+        kind: "portal_link",
+      }),
+    ).rejects.toMatchObject({
+      name: "ProviderError",
+      kind: "malformed_response",
+      provider: "resend",
+      operation: "send",
+      isRetryable: false,
+    });
+    // A failed body read must not wedge the serialized queue either.
+    const recovered = await sender.send({
+      to: "client@example.com",
+      subject: "s",
+      text: "t",
+      dedupeKey: "k2c",
+      kind: "portal_link",
+    });
+    expect(recovered.messageId).toBe("msg_ok");
+  });
+
   it("aborts a stalled response under the deadline and maps it to timeout", async () => {
     envResend();
     let call = 0;
