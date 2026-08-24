@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
 import { getIdentitySessionPort } from "@/lib/auth/server";
 import { AppError } from "@/lib/http/errors";
 import {
