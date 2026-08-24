@@ -7,7 +7,11 @@ import {
   type DbTx,
 } from "../../lib/db/transaction-runner";
 import { computeCanonicalBodyHash } from "../../lib/idempotency/idempotency-port";
-import { runOnboardingTransaction, type OnboardingResult } from "../../lib/onboarding/onboard-owner";
+import {
+  runOnboardingTransaction,
+  AlreadyOnboardedRaceError,
+  type OnboardingResult,
+} from "../../lib/onboarding/onboard-owner";
 import {
   closeHarnessDb,
   createHarnessDb,
@@ -280,16 +284,19 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     // createActiveOwnerMembership, so once either identity already owns a
     // workspace from an earlier run on a shared database, the second owner
     // membership violates the workspace_members_single_owned_workspace_
-    // per_identity_key partial unique index and the attempt fails with
-    // SQLSTATE 23505. Seeding errors are surfaced, never swallowed: any
-    // captured failure MUST carry that expected duplicate-key code, so a
-    // genuine onboarding regression cannot hide behind the FK probe below.
+    // per_identity_key partial unique index. Since
+    // PRRT_kwDOT_C_FM6bspCN that violation is classified as
+    // AlreadyOnboardedRaceError (the route maps it to 409
+    // ALREADY_ONBOARDED); the raw 23505 never escapes the repository.
+    // Seeding errors are surfaced, never swallowed: any captured failure
+    // MUST be that classified duplicate-owner race, so a genuine onboarding
+    // regression cannot hide behind the FK probe below.
     const seedOrExpectRerunDuplicate = async (authUserId: string, slug: string): Promise<void> => {
       const seeded = await onboard(authUserId, slug);
       if (!(seeded instanceof Error)) return;
-      // A re-run failure must be the documented duplicate-owner 23505;
+      // A re-run failure must be the documented duplicate-owner race;
       // anything else (or a silent swallow) fails the scenario.
-      expect(pgCode(seeded)).toBe("23505");
+      expect(seeded).toBeInstanceOf(AlreadyOnboardedRaceError);
     };
     const slugA = `slug-xa-${String(Date.now())}`;
     const slugB = `slug-xb-${String(Date.now())}`;
@@ -316,3 +323,4 @@ describeIntegration("onboarding persistence (real PostgreSQL)", () => {
     expect(journal.rows[0]?.n).toBeGreaterThan(0);
   });
 });
+

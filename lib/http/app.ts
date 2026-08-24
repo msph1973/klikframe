@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requestIdMiddleware, type RequestIdVariables } from "./request-id";
 import { AppError, toErrorEnvelope } from "./errors";
 import { registerHealthRoute } from "./health";
+import { registerOnboardingRoute } from "@/lib/onboarding/route";
 import { wireIdentitySessionPort } from "@/lib/providers/composition";
 
 export type AppVariables = RequestIdVariables;
@@ -33,6 +34,8 @@ export function createApp(): KlikFrameApp {
   });
 
   registerHealthRoute(app);
+  registerOnboardingRoute(app);
+
 
   return app;
 }
